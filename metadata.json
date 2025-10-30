@@ -1,0 +1,5 @@
+{
+  "name": "EXA Shield: Detector de Ameaças Internas",
+  "description": "Uma aplicação alimentada por IA para identificar ameaças internas, riscos de segurança e vazamento de dados no Google Workspace, analisando logs do Chat, E-mail e Drive. Gera alertas em tempo real para administradores e executivos.",
+  "requestFramePermissions": []
+}
