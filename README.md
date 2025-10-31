@@ -16,128 +16,59 @@ Pense nele como um analista de segurança dedicado, trabalhando 24/7 para proteg
 *   **🚀 Verificação Imediata:** Precisa de uma análise agora? Um clique no botão "Verificar Agora" inicia uma varredura completa sob demanda.
 
 ---
-## 🤔 Como Funciona? (A Mágica por Trás da Cortina)
 
-1.  **Conexão Segura:** Você autoriza o EXA Shield a ler os logs de atividades do seu Google Workspace. É como dar uma chave de "apenas leitura" para um segurança.
-2.  **Coleta de Dados:** A aplicação coleta os logs recentes dos serviços que você escolheu (Drive, Login, etc.).
-3.  **Análise com IA:** Os logs são enviados para o cérebro da operação, o Gemini. A IA analisa os eventos em busca de padrões anômalos, uso de palavras-chave de risco e comportamentos que fogem do normal.
-4.  **Geração de Alertas:** Se a IA detecta uma ameaça potencial, ela cria um alerta detalhado no seu dashboard, explicando o risco, mostrando o usuário envolvido e as evidências encontradas.
-5.  **Ação Rápida:** Você, o administrador, visualiza o alerta e pode tomar as ações necessárias para mitigar o risco.
+## 🚀 Guia de Instalação Rápida (5 Minutos)
 
----
+Instalar o EXA Shield agora é um processo simples e quase totalmente automatizado.
 
-## 🚀 Guia de Instalação para Iniciantes (Passo a Passo)
+### Pré-requisitos
 
-Não se preocupe se você não é um expert em tecnologia. Siga estes passos com calma e você terá o EXA Shield funcionando!
-
-### Parte 1: O Que Você Precisa Ter em Mãos
-
-1.  **Conta Google Workspace:** Você deve ser um administrador.
-2.  **Conta Google Cloud Platform (GCP):** Se não tiver, [crie uma gratuitamente aqui](https://cloud.google.com/).
-3.  **Node.js:** É o ambiente que executa o "motor" da aplicação. [Instale a versão LTS (recomendada) aqui](https://nodejs.org/).
+1.  **Conta Google Workspace:** Você precisa ser um administrador.
+2.  **Node.js:** O ambiente que executa a aplicação. [Instale a versão LTS (recomendada) aqui](https://nodejs.org/).
+3.  **Google Cloud SDK:** A ferramenta de linha de comando para o Google Cloud. [Siga as instruções de instalação aqui](https://cloud.google.com/sdk/docs/install).
 
 ---
-### Parte 2: A Aventura no Google Cloud (Configurando a Base)
 
-Esta é a parte mais importante. Vamos criar a "identidade" da sua aplicação no Google.
+### Passo 1: Baixe o Código
 
-#### 1. Crie um Novo Projeto
+Clone o repositório do projeto para a sua máquina. Se você não tem o `git` instalado, pode baixar o código como um arquivo ZIP.
 
-*   Acesse o [console do Google Cloud](https://console.cloud.google.com/).
-*   No topo da página, clique no seletor de projetos (ao lado do logo "Google Cloud") e depois em **"NOVO PROJETO"**.
-*   Dê um nome fácil de lembrar, como `EXA Shield App`, e clique em **"CRIAR"**.
+```bash
+git clone https://github.com/seu-usuario/exa-shield.git
+cd exa-shield
+```
 
-#### 2. Ative as "Ferramentas" (APIs)
+### Passo 2: Instale as Dependências
 
-*   Com seu novo projeto selecionado, vá para o menu (☰) no canto superior esquerdo e clique em **`APIs e Serviços > Biblioteca`**.
-*   Use a barra de busca para encontrar e **ATIVAR** cada uma das seguintes APIs, uma por uma:
-    *   `Admin SDK API`
-    *   `Google People API`
-    *   `Generative Language API` (Esta é a API do Gemini)
-    *   `Cloud Firestore API` (Este será nosso banco de dados)
+Este comando único instala tudo o que o frontend e o backend precisam para funcionar.
 
-#### 3. Prepare o "Armazenamento" (Firestore)
+```bash
+npm install
+```
 
-*   No menu (☰), desça até a seção `Bancos de dados` e clique em **`Firestore`**.
-*   Clique em **"CRIAR BANCO DE DADOS"**.
-*   Escolha o modo **Nativo**.
-*   Escolha um local (ex: `southamerica-east1 (São Paulo)`) e clique em **"CRIAR BANCO DE DADOS"**.
+### Passo 3: Configure o Ambiente Google Cloud (O jeito fácil!)
 
-#### 4. Crie as "Chaves de Acesso" (Credenciais)
+Execute o assistente de configuração. Ele vai te guiar pelo processo de login, criação de projeto no Google Cloud e geração de todas as chaves de API necessárias, criando o arquivo `.env` para você.
 
-Agora, vamos gerar as senhas que a nossa aplicação usará para se comunicar com o Google. **Guarde estas chaves em um local seguro!**
+```bash
+node setup-gcp.js
+```
 
-*   **a) Tela de Permissão (O que o usuário verá):**
-    *   No menu (☰), vá para `APIs e Serviços > Tela de consentimento OAuth`.
-    *   Selecione `Externo` e clique em **"CRIAR"**.
-    *   Preencha os campos obrigatórios:
-        *   **Nome do app:** `EXA Shield`
-        *   **E-mail para suporte do usuário:** (seu e-mail)
-        *   **Informações de contato do desenvolvedor:** (seu e-mail novamente)
-    *   Clique em **"SALVAR E CONTINUAR"** nas próximas telas até voltar ao painel.
-    *   Clique em **"Adicionar usuários"** e adicione seu próprio e-mail como um "Usuário de teste". Isso permite que você use a aplicação antes de publicá-la.
+Siga as instruções que aparecerão no seu terminal. O script fará todo o trabalho pesado.
 
-*   **b) Chave do "Portão Principal" (Credenciais OAuth 2.0):**
-    *   Vá para `APIs e Serviços > Credenciais`.
-    *   Clique em `+ CRIAR CREDENCIAIS` e selecione `ID do cliente OAuth`.
-    *   **Tipo de aplicativo:** `Aplicativo da Web`.
-    *   **Nome:** `EXA Shield Web Client`.
-    *   Em `URIs de redirecionamento autorizados`, clique em `+ ADICIONAR URI` e cole exatamente isso: `http://localhost:3001/api/auth/google/callback`
-    *   Clique em **"CRIAR"**. Uma janela aparecerá. **COPIE o `ID DO CLIENTE` e a `CHAVE SECRETA DO CLIENTE`.** Guarde-os em um bloco de notas por enquanto.
+### Passo 4: Ligue os Motores!
 
-*   **c) Chave da "Sala de Inteligência" (Chave de API do Gemini):**
-    *   Ainda em `Credenciais`, clique em `+ CRIAR CREDENCIAIS` e selecione `Chave de API`.
-    *   Uma chave será gerada. **COPIE esta chave.**
+Agora, inicie a aplicação. Este comando vai ligar o servidor do backend e o servidor do frontend ao mesmo tempo.
 
----
-### Parte 3: Configurando a Aplicação na Sua Máquina
+```bash
+npm run dev
+```
 
-#### 1. Baixe o Código
+Você verá mensagens indicando que ambos os servidores estão rodando.
 
-*   Baixe o código-fonte deste projeto como um arquivo ZIP e extraia-o em uma pasta de fácil acesso (ex: `C:\Projetos\exa-shield`).
+Abra seu navegador e acesse: **http://localhost:3000**
 
-#### 2. Instale as "Peças do Motor" (Dependências)
-
-*   Abra o terminal do seu computador (no Windows, pode ser o "Prompt de Comando" ou "PowerShell").
-*   Navegue até a pasta `backend` que está dentro do projeto. O comando é `cd`, por exemplo: `cd C:\Projetos\exa-shield\backend`
-*   Execute o comando abaixo. Ele vai baixar e instalar tudo que o backend precisa.
-    ```bash
-    npm install
-    ```
-
-#### 3. Configure o "Painel de Controle Secreto" (Arquivo .env)
-
-*   Dentro da pasta `backend`, crie um novo arquivo de texto e o nomeie exatamente como `.env` (sem nada antes do ponto).
-*   Abra este arquivo e cole o conteúdo abaixo. Substitua os textos de exemplo pelas chaves que você copiou e guardou na Parte 2.
-
-    ```env
-    # Cole aqui as credenciais da Parte 2.4.b
-    GOOGLE_CLIENT_ID=SEU_ID_DE_CLIENTE_AQUI.apps.googleusercontent.com
-    GOOGLE_CLIENT_SECRET=SUA_CHAVE_SECRETA_AQUI
-
-    # Cole aqui a chave da API da Parte 2.4.c
-    API_KEY=SUA_CHAVE_DE_API_AQUI
-
-    # Este valor deve ser exatamente o mesmo que você configurou no Google Cloud
-    REDIRECT_URI=http://localhost:3001/api/auth/google/callback
-
-    # Para segurança, invente duas frases longas e aleatórias aqui
-    COOKIE_SECRET_KEY_1=frase-secreta-aleatoria-numero-um-muito-longa
-    COOKIE_SECRET_KEY_2=frase-secreta-aleatoria-numero-dois-super-segura
-    ```
-
----
-### Parte 4: Ligar os Motores! 🚀
-
-1.  No seu terminal, certifique-se que você ainda está na pasta `backend`.
-2.  Execute o comando mágico:
-    ```bash
-    npm start
-    ```
-3.  Você deverá ver a mensagem: `Backend do EXA Shield rodando na porta 3001`.
-4.  Abra seu navegador de internet e acesse: **http://localhost:3001**
-
-**Parabéns!** O EXA Shield está rodando na sua máquina. Siga os passos na tela para conectar sua conta e começar a proteger seu ambiente!
+**Pronto!** O EXA Shield está funcionando na sua máquina. Siga os passos na tela para conectar sua conta e começar a proteger seu ambiente.
 
 ---
 
@@ -153,9 +84,9 @@ Agora, vamos gerar as senhas que a nossa aplicação usará para se comunicar co
 ---
 ## 🔮 Levando para o Mundo Real (Deploy em Produção)
 
-Quando estiver pronto para usar o EXA Shield de forma contínua e acessível por outros, siga estes passos:
+Quando estiver pronto para usar o EXA Shield de forma contínua, o processo é similar, mas com alguns passos adicionais:
 
-*   **Domínio e HTTPS:** Implante a aplicação em um servidor (ex: Google Cloud Run, DigitalOcean, etc.) e configure um domínio com um certificado SSL/TLS (HTTPS). Isso é crucial para a segurança.
-*   **Atualize o URI:** No painel do Google Cloud (`APIs e Serviços > Credenciais`), adicione o seu novo URI de produção (ex: `https://exashield.suaempresa.com/api/auth/google/callback`) à lista de URIs de redirecionamento autorizados.
-*   **Atualize o `.env`:** Altere o `REDIRECT_URI` no seu arquivo `.env` de produção para o novo domínio.
-*   **Automatize a Análise:** Para que o monitoramento seja contínuo, configure um "Cron Job" (uma tarefa agendada) no seu servidor para chamar o endpoint `POST /api/run-analysis` periodicamente (ex: a cada 30 minutos). Serviços como o Google Cloud Scheduler são perfeitos para isso.
+*   **Domínio e HTTPS:** Implante a aplicação em um servidor (ex: Google Cloud Run, Vercel, etc.) e configure um domínio com um certificado SSL/TLS (HTTPS).
+*   **Atualize os URIs de Redirecionamento:** No seu projeto no [console do Google Cloud](https://console.cloud.google.com/), vá para `APIs e Serviços > Credenciais`. Edite seu "ID do cliente OAuth" e adicione o novo URI de produção (ex: `https://exashield.suaempresa.com/api/auth/google/callback`) à lista de URIs autorizados.
+*   **Atualize o `.env`:** Altere a variável `REDIRECT_URI` no seu arquivo `.env` de produção para o novo domínio.
+*   **Automatize a Análise:** Para monitoramento contínuo, configure um "Cron Job" (tarefa agendada) no seu servidor para chamar o endpoint `POST /api/run-analysis` periodicamente (ex: a cada 30 minutos). Serviços como o Google Cloud Scheduler são perfeitos para isso.
