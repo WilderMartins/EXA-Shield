@@ -1,0 +1,19 @@
+{
+  "name": "exa-shield-backend",
+  "version": "1.0.0",
+  "description": "Backend for EXA Shield, an AI-powered insider threat detection tool for Google Workspace.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "author": "AI Studio",
+  "license": "ISC",
+  "dependencies": {
+    "@google-cloud/firestore": "^7.8.0",
+    "@google/genai": "^1.2.0",
+    "cookie-session": "^2.1.0",
+    "express": "^4.19.2",
+    "googleapis": "^137.1.0"
+  }
+}
