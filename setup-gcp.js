@@ -52,7 +52,7 @@ async function executeCommand(command) {
 
 async function getAuthenticatedClient() {
     console.log(chalk.blue('Para autenticar, por favor, siga estes passos:'));
-    console.log(chalk.yellow('1. Abra um NOVO terminal. Não feche este.' celebratory));
+    console.log(chalk.yellow('1. Abra um NOVO terminal. Não feche este.'));
     console.log(chalk.yellow('2. No novo terminal, execute o seguinte comando:'));
     console.log(chalk.bold.white('   gcloud auth application-default login'));
     console.log(chalk.yellow('3. Siga as instruções no navegador para fazer o login e autorizar o acesso.'));
