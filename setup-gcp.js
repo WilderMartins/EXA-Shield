@@ -185,7 +185,7 @@ async function createOAuthCredentials(projectId, authClient) {
                 validate: input => !!input,
             }
         ]);
-        await executeCommand(`gcloud beta projects billing-accounts link ${projectId} --billing-account=${billingId}`);
+        await executeCommand(`gcloud billing projects link ${projectId} --billing-account=${billingId}`);
         console.log(chalk.green('Tela de consentimento configurada.'));
     } catch (e) {
          console.log(chalk.yellow('A tela de consentimento já parece estar configurada. Pulando esta etapa.'));
