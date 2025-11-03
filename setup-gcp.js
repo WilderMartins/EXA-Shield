@@ -51,35 +51,31 @@ async function executeCommand(command) {
 }
 
 async function getAuthenticatedClient() {
-    console.log(chalk.blue('Siga as instruções para fazer login com sua conta Google...'));
+    console.log(chalk.blue('Para autenticar, por favor, siga estes passos:'));
+    console.log(chalk.yellow('1. Abra um NOVO terminal. Não feche este.' celebratory));
+    console.log(chalk.yellow('2. No novo terminal, execute o seguinte comando:'));
+    console.log(chalk.bold.white('   gcloud auth application-default login'));
+    console.log(chalk.yellow('3. Siga as instruções no navegador para fazer o login e autorizar o acesso.'));
+    console.log(chalk.yellow('4. Após a conclusão, volte para este terminal.'));
+
+    await inquirer.prompt([
+        {
+            type: 'input',
+            name: 'continue',
+            message: 'Pressione Enter aqui quando tiver concluído a autenticação no outro terminal...',
+        },
+    ]);
+
     try {
-        const authOutput = await executeCommand('gcloud auth application-default login --no-launch-browser');
-
-        const urlRegex = /(https:\/\/\S+)/;
-        const urlMatch = authOutput.match(urlRegex);
-
-        if (urlMatch && urlMatch[0]) {
-            const authUrl = urlMatch[0];
-            console.log(chalk.yellow('\nPor favor, abra o seguinte URL em um navegador para autorizar a aplicação:'));
-            console.log(chalk.bold.underline(authUrl));
-
-            await inquirer.prompt([
-                {
-                    type: 'input',
-                    name: 'continue',
-                    message: 'Depois de autorizar, pressione Enter para continuar...',
-                },
-            ]);
-        } else {
-            console.log(chalk.yellow('Não foi possível extrair a URL de autorização. Se você já estiver autenticado, o script continuará.'));
-        }
-
+        console.log(chalk.blue('Verificando status da autenticação...'));
         const auth = new google.auth.GoogleAuth({
             scopes: OAUTH_SCOPES,
         });
-        return await auth.getClient();
+        const client = await auth.getClient();
+        console.log(chalk.green('Autenticação bem-sucedida!'));
+        return client;
     } catch (error) {
-        console.error(chalk.red('Falha na autenticação. Verifique se o Google Cloud SDK está instalado e configurado.'));
+        console.error(chalk.red('Falha na autenticação. Verifique se o processo foi concluído corretamente no outro terminal.'));
         console.error(chalk.cyan('Consulte o arquivo `setup-gcp.log` para mais detalhes.'));
         throw error;
     }
