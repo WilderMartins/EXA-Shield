@@ -186,13 +186,33 @@ async function createOAuthCredentials(projectId, authClient) {
             }
         ]);
         await executeCommand(`gcloud billing projects link ${projectId} --billing-account=${billingId}`);
-        console.log(chalk.green('Tela de consentimento configurada.'));
     } catch (e) {
-         console.log(chalk.yellow('A tela de consentimento já parece estar configurada. Pulando esta etapa.'));
+         console.log(chalk.yellow('O faturamento já parece estar configurado. Pulando esta etapa.'));
+    }
+
+    // Create the OAuth Consent Screen (brand)
+    try {
+        console.log(chalk.blue('Criando a tela de consentimento OAuth...'));
+        const supportEmail = await executeCommand('gcloud config get-value account');
+        await iap.projects.brands.create({
+            parent: `projects/${projectId}`,
+            requestBody: {
+                supportEmail: supportEmail.trim(),
+                applicationTitle: 'EXA Shield',
+            },
+        });
+        console.log(chalk.green('Tela de consentimento criada com sucesso.'));
+    } catch (error) {
+        if (error.code === 409) { // 409 Conflict means it already exists
+            console.log(chalk.yellow('A tela de consentimento já existe.'));
+        } else {
+            console.error(chalk.red('Falha ao criar a tela de consentimento.'), error.message);
+            throw error;
+        }
     }
 
     const { data } = await iap.projects.brands.identityAwareProxyClients.create({
-        parent: `projects/${projectId}/brands`,
+        parent: `projects/${projectId}/brands/${projectId}`,
         requestBody: {
             displayName: 'EXA Shield Web Client'
         }
@@ -224,6 +244,10 @@ async function main() {
         const projectId = await selectOrCreateProject(authClient);
 
         await enableAPIs(projectId);
+
+        console.log(chalk.blue('\nAguardando 60 segundos para que os serviços do Google Cloud sejam provisionados...'));
+        await new Promise(resolve => setTimeout(resolve, 60000));
+
         await createFirestoreDatabase(projectId);
 
         const { clientId, clientSecret, redirectUri } = await createOAuthCredentials(projectId, authClient);
