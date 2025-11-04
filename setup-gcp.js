@@ -280,10 +280,10 @@ COOKIE_SECRET_KEY_1=${randomBytes(32).toString('hex')}
 COOKIE_SECRET_KEY_2=${randomBytes(32).toString('hex')}
 `.trim();
 
-        await writeFile(path.join(__dirname, 'backend', '.env'), envContent);
+        await writeFile(path.join(__dirname, '.env'), envContent);
 
         console.log(chalk.bold.green('\n🎉 Configuração concluída com sucesso! 🎉'));
-        console.log(chalk.cyan('O arquivo `.env` foi criado em `backend/.env` com suas credenciais.'));
+        console.log(chalk.cyan('O arquivo `.env` foi criado em `.env` com suas credenciais.'));
         console.log(chalk.yellow('\nPara iniciar a aplicação, execute:'));
         console.log(chalk.white('npm install && npm run dev'));
 
