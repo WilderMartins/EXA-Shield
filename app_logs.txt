@@ -1,0 +1,17 @@
+
+> exa-shield:-detector-de-ameaças-internas@0.0.0 dev
+> concurrently "npm:dev:frontend" "npm:dev:backend"
+
+[dev:frontend]
+[dev:frontend] > exa-shield:-detector-de-ameaças-internas@0.0.0 dev:frontend
+[dev:frontend] > vite
+[dev:frontend]
+[dev:backend]
+[dev:backend] > exa-shield:-detector-de-ameaças-internas@0.0.0 dev:backend
+[dev:backend] > node --watch backend/index.js
+[dev:backend]
+[dev:frontend]
+[dev:frontend]   VITE v6.4.1  ready in 610 ms
+[dev:frontend]
+[dev:frontend]   ➜  Local:   http://localhost:3000/
+[dev:frontend]   ➜  Network: http://192.168.0.2:3000/
