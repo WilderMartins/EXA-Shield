@@ -1,12 +1,19 @@
-const express = require('express');
-const { google } = require('googleapis');
-const { GoogleGenAI } = require('@google/genai');
-const { Firestore } = require('@google-cloud/firestore');
-const cookieSession = require('cookie-session');
-const path = require('path');
+import express from 'express';
+import { google } from 'googleapis';
+import { GoogleGenAI } from '@google/genai';
+import { Firestore } from '@google-cloud/firestore';
+import cookieSession from 'cookie-session';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 3002;
 
 // --- Configuração ---
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
@@ -208,6 +215,12 @@ async function runAnalysis(userId) {
 // --- Endpoints da API ---
 
 app.get('/api/auth/google', (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    console.error('As credenciais do Google (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET) não foram encontradas no ambiente.');
+    return res.status(500).json({
+      message: 'Erro de configuração no servidor: As credenciais do Google não foram encontradas. Verifique o arquivo backend/.env e reinicie o servidor.'
+    });
+  }
   try {
     const scopes = [
       'https://www.googleapis.com/auth/userinfo.profile',
@@ -222,7 +235,7 @@ app.get('/api/auth/google', (req, res) => {
     res.json({ authUrl });
   } catch (error) {
     console.error('Erro ao gerar URL de autenticação:', error);
-    res.status(500).json({ message: 'Erro ao gerar URL de autenticação.' });
+    res.status(500).json({ message: 'Erro interno ao gerar a URL de autenticação do Google.' });
   }
 });
 
