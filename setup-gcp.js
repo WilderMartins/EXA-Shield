@@ -190,29 +190,44 @@ async function createOAuthCredentials(projectId, authClient) {
          console.log(chalk.yellow('O faturamento já parece estar configurado. Pulando esta etapa.'));
     }
 
-    // Create the OAuth Consent Screen (brand)
+    // Create or get the OAuth Consent Screen (brand)
+    let brandName;
     try {
         console.log(chalk.blue('Criando a tela de consentimento OAuth...'));
         const supportEmail = await executeCommand('gcloud config get-value account');
-        await iap.projects.brands.create({
+        const { data: newBrand } = await iap.projects.brands.create({
             parent: `projects/${projectId}`,
             requestBody: {
                 supportEmail: supportEmail.trim(),
                 applicationTitle: 'EXA Shield',
             },
         });
+        brandName = newBrand.name;
         console.log(chalk.green('Tela de consentimento criada com sucesso.'));
     } catch (error) {
         if (error.code === 409) { // 409 Conflict means it already exists
-            console.log(chalk.yellow('A tela de consentimento já existe.'));
+            console.log(chalk.yellow('A tela de consentimento já existe, buscando...'));
+            const { data: { brands } } = await iap.projects.brands.list({
+                parent: `projects/${projectId}`,
+            });
+            if (brands && brands.length > 0) {
+                brandName = brands[0].name;
+            } else {
+                 throw new Error('Falha: A tela de consentimento existe mas não foi encontrada.');
+            }
         } else {
-            console.error(chalk.red('Falha ao criar a tela de consentimento.'), error.message);
+            console.error(chalk.red('Falha ao criar ou buscar a tela de consentimento.'), error.message);
             throw error;
         }
     }
 
+    if (!brandName) {
+        throw new Error('Não foi possível determinar o nome da tela de consentimento (brand).');
+    }
+
+    console.log(chalk.blue('Criando o cliente OAuth...'));
     const { data } = await iap.projects.brands.identityAwareProxyClients.create({
-        parent: `projects/${projectId}/brands/${projectId}`,
+        parent: brandName, // Use the dynamically retrieved brand name
         requestBody: {
             displayName: 'EXA Shield Web Client'
         }
