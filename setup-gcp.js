@@ -2,6 +2,7 @@
 import { exec } from 'child_process';
 import { google } from 'googleapis';
 import { writeFile } from 'fs/promises';
+import { createWriteStream } from 'fs';
 import { randomBytes } from 'crypto';
 import inquirer from 'inquirer';
 import chalk from 'chalk';
@@ -22,11 +23,26 @@ const REQUIRED_APIS = [
     'iap.googleapis.com'
 ];
 
+const logStream = createWriteStream('setup-gcp.log', { flags: 'a' });
+
+const log = (message) => {
+    logStream.write(`${new Date().toISOString()}: ${message}\n`);
+};
+
 async function executeCommand(command) {
+    log(`Executando comando: ${command}`);
     return new Promise((resolve, reject) => {
         exec(command, (error, stdout, stderr) => {
+            if (stdout) log(`STDOUT: ${stdout}`);
+            if (stderr) log(`STDERR: ${stderr}`);
+
             if (error) {
-                reject(stderr || error);
+                log(`EXEC ERROR: ${error.message}`);
+                if (command.includes('gcloud auth application-default login')) {
+                    resolve(stderr);
+                } else {
+                    reject(new Error(`O comando falhou: ${command}\n${stderr || error.message}`));
+                }
                 return;
             }
             resolve(stdout.trim());
@@ -35,15 +51,32 @@ async function executeCommand(command) {
 }
 
 async function getAuthenticatedClient() {
-    console.log(chalk.blue('Por favor, faça login com sua conta Google para continuar...'));
+    console.log(chalk.blue('Para autenticar, por favor, siga estes passos:'));
+    console.log(chalk.yellow('1. Abra um NOVO terminal. Não feche este.'));
+    console.log(chalk.yellow('2. No novo terminal, execute o seguinte comando:'));
+    console.log(chalk.bold.white('   gcloud auth application-default login'));
+    console.log(chalk.yellow('3. Siga as instruções no navegador para fazer o login e autorizar o acesso.'));
+    console.log(chalk.yellow('4. Após a conclusão, volte para este terminal.'));
+
+    await inquirer.prompt([
+        {
+            type: 'input',
+            name: 'continue',
+            message: 'Pressione Enter aqui quando tiver concluído a autenticação no outro terminal...',
+        },
+    ]);
+
     try {
-        await executeCommand('gcloud auth application-default login');
+        console.log(chalk.blue('Verificando status da autenticação...'));
         const auth = new google.auth.GoogleAuth({
             scopes: OAUTH_SCOPES,
         });
-        return await auth.getClient();
+        const client = await auth.getClient();
+        console.log(chalk.green('Autenticação bem-sucedida!'));
+        return client;
     } catch (error) {
-        console.error(chalk.red('Falha na autenticação. Verifique se o Google Cloud SDK está instalado e configurado corretamente.'));
+        console.error(chalk.red('Falha na autenticação. Verifique se o processo foi concluído corretamente no outro terminal.'));
+        console.error(chalk.cyan('Consulte o arquivo `setup-gcp.log` para mais detalhes.'));
         throw error;
     }
 }
@@ -95,16 +128,14 @@ async function selectOrCreateProject(authClient) {
 
 async function enableAPIs(projectId) {
     console.log(chalk.blue('Ativando as APIs necessárias... Isso pode levar alguns minutos.'));
-    const serviceUsage = google.serviceusage('v1');
 
     for (const api of REQUIRED_APIS) {
         try {
-            await serviceUsage.services.enable({
-                name: `projects/${projectId}/services/${api}`,
-            });
+            await executeCommand(`gcloud services enable ${api} --project=${projectId}`);
             console.log(chalk.green(`- API ${api} ativada com sucesso.`));
         } catch(e) {
-            console.log(chalk.yellow(`- API ${api} já estava ativada.`));
+            console.log(chalk.yellow(`- API ${api} já estava ativada ou falhou ao ativar. Verifique os logs.`));
+            log(`Falha ao ativar a API ${api}: ${e.message}`);
         }
     }
 }
@@ -131,10 +162,10 @@ async function createFirestoreDatabase(projectId) {
         await executeCommand(`gcloud firestore databases create --project=${projectId} --location=${location.split(' ')[0]} --type=firestore-native`);
         console.log(chalk.green('Banco de dados Firestore criado com sucesso!'));
     } catch(error) {
-        if(error.includes('already exists')) {
+        if(error.message.includes('already exists')) {
              console.log(chalk.yellow('Banco de dados Firestore já existe neste projeto.'));
         } else {
-            console.error(chalk.red('Falha ao criar o banco de dados Firestore.'), error);
+            console.error(chalk.red('Falha ao criar o banco de dados Firestore.'), error.message);
             throw error;
         }
     }
@@ -145,7 +176,6 @@ async function createOAuthCredentials(projectId, authClient) {
     const iap = google.iap('v1');
     const redirectUri = 'http://localhost:3001/api/auth/google/callback';
 
-    // Configure OAuth consent screen
     try {
         const { billingId } = await inquirer.prompt([
             {
@@ -155,14 +185,34 @@ async function createOAuthCredentials(projectId, authClient) {
                 validate: input => !!input,
             }
         ]);
-        await executeCommand(`gcloud beta projects billing-accounts link ${projectId} --billing-account=${billingId}`);
-        console.log(chalk.green('Tela de consentimento configurada.'));
+        await executeCommand(`gcloud billing projects link ${projectId} --billing-account=${billingId}`);
     } catch (e) {
-         console.log(chalk.yellow('A tela de consentimento já parece estar configurada. Pulando esta etapa.'));
+         console.log(chalk.yellow('O faturamento já parece estar configurado. Pulando esta etapa.'));
+    }
+
+    // Create the OAuth Consent Screen (brand)
+    try {
+        console.log(chalk.blue('Criando a tela de consentimento OAuth...'));
+        const supportEmail = await executeCommand('gcloud config get-value account');
+        await iap.projects.brands.create({
+            parent: `projects/${projectId}`,
+            requestBody: {
+                supportEmail: supportEmail.trim(),
+                applicationTitle: 'EXA Shield',
+            },
+        });
+        console.log(chalk.green('Tela de consentimento criada com sucesso.'));
+    } catch (error) {
+        if (error.code === 409) { // 409 Conflict means it already exists
+            console.log(chalk.yellow('A tela de consentimento já existe.'));
+        } else {
+            console.error(chalk.red('Falha ao criar a tela de consentimento.'), error.message);
+            throw error;
+        }
     }
 
     const { data } = await iap.projects.brands.identityAwareProxyClients.create({
-        parent: `projects/${projectId}/brands`,
+        parent: `projects/${projectId}/brands/${projectId}`,
         requestBody: {
             displayName: 'EXA Shield Web Client'
         }
@@ -185,13 +235,19 @@ async function createApiKey(projectId) {
 }
 
 async function main() {
+    log('---=== Iniciando o Assistente de Configuração do EXA Shield ===---');
     console.log(chalk.bold.yellow('---=== 🛡️  Assistente de Configuração do EXA Shield  ===---'));
+    console.log(chalk.gray('Um log detalhado será salvo em `setup-gcp.log`'));
 
     try {
         const authClient = await getAuthenticatedClient();
         const projectId = await selectOrCreateProject(authClient);
 
         await enableAPIs(projectId);
+
+        console.log(chalk.blue('\nAguardando 60 segundos para que os serviços do Google Cloud sejam provisionados...'));
+        await new Promise(resolve => setTimeout(resolve, 60000));
+
         await createFirestoreDatabase(projectId);
 
         const { clientId, clientSecret, redirectUri } = await createOAuthCredentials(projectId, authClient);
@@ -217,9 +273,13 @@ COOKIE_SECRET_KEY_2=${randomBytes(32).toString('hex')}
         console.log(chalk.white('npm install && npm run dev'));
 
     } catch (error) {
+        log(`ERRO FATAL: ${error.stack || error}`);
         console.error(chalk.red.bold('\nOcorreu um erro durante a configuração:'));
-        console.error(error);
+        console.error(error.message);
+        console.error(chalk.cyan('Consulte o arquivo `setup-gcp.log` para mais detalhes.'));
         process.exit(1);
+    } finally {
+        logStream.end();
     }
 }
 
