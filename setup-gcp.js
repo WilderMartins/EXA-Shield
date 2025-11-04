@@ -173,7 +173,7 @@ async function createFirestoreDatabase(projectId) {
 
 async function createOAuthCredentials(projectId, authClient) {
     console.log(chalk.blue('Criando as credenciais de acesso OAuth 2.0...'));
-    const iap = google.iap('v1');
+    const iap = google.iap({ version: 'v1', auth: authClient });
     const redirectUri = 'http://localhost:3001/api/auth/google/callback';
 
     try {
