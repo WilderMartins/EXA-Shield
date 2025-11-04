@@ -208,6 +208,12 @@ async function runAnalysis(userId) {
 // --- Endpoints da API ---
 
 app.get('/api/auth/google', (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    console.error('As credenciais do Google (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET) não foram encontradas no ambiente.');
+    return res.status(500).json({
+      message: 'Erro de configuração no servidor: As credenciais do Google não foram encontradas. Verifique o arquivo backend/.env e reinicie o servidor.'
+    });
+  }
   try {
     const scopes = [
       'https://www.googleapis.com/auth/userinfo.profile',
@@ -222,7 +228,7 @@ app.get('/api/auth/google', (req, res) => {
     res.json({ authUrl });
   } catch (error) {
     console.error('Erro ao gerar URL de autenticação:', error);
-    res.status(500).json({ message: 'Erro ao gerar URL de autenticação.' });
+    res.status(500).json({ message: 'Erro interno ao gerar a URL de autenticação do Google.' });
   }
 });
 
