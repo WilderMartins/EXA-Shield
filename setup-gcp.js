@@ -270,6 +270,7 @@ async function main() {
 
         const envContent = `
 # Credenciais geradas pelo assistente de configuração do EXA Shield
+GCP_PROJECT_ID=${projectId}
 GOOGLE_CLIENT_ID=${clientId}
 GOOGLE_CLIENT_SECRET=${clientSecret}
 API_KEY=${apiKey}
