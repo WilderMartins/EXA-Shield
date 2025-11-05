@@ -68,6 +68,10 @@ const SettingsPage = () => {
     }));
   };
 
+  const handleScheduleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setLocalSettings((prev: any) => ({ ...prev, schedule: e.target.value }));
+  };
+
   const handleSave = async () => {
     await saveSettings(localSettings);
     fetchSettings();
@@ -225,8 +229,32 @@ const SettingsPage = () => {
         </div>
       </div>
 
+      <div>
+        <h2 className="text-xl font-semibold text-white">Automação da Análise</h2>
+        <p className="mt-1 text-slate-400">
+          Configure a frequência com que o EXA Shield deve verificar os logs automaticamente.
+        </p>
+        <div className="mt-4 grid grid-cols-1 gap-y-4 gap-x-4 rounded-md border border-slate-700 bg-slate-800/50 p-4 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <label htmlFor="scheduleEnabled" className="block text-sm font-medium text-slate-300">Análise Automática</label>
+            <select
+              id="scheduleEnabled"
+              name="schedule"
+              value={localSettings.schedule || 'disabled'}
+              onChange={handleScheduleChange}
+              className="mt-1 block w-full rounded-md border-slate-600 bg-slate-900 text-slate-200 shadow-sm focus:border-sky-500 focus:ring-sky-500"
+            >
+              <option value="disabled">Desativado</option>
+              <option value="30m">A cada 30 minutos</option>
+              <option value="1h">A cada hora</option>
+              <option value="daily">Diariamente</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
        <div>
-        <h2 className="text-xl font-semibold text-white">Status da Automação</h2>
+        <h2 className="text-xl font-semibold text-white">Status da Análise Manual</h2>
         <div className="mt-4 grid grid-cols-1 gap-4 rounded-md border border-slate-700 bg-slate-800/50 p-4 sm:grid-cols-3">
            <div className="flex items-center space-x-3">
              <SignalIcon className={`h-8 w-8 ${localSettings.isAnalysisRunning ? 'text-sky-400 animate-pulse' : 'text-green-500'}`} />
