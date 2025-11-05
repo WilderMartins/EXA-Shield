@@ -27,6 +27,12 @@ const REQUIRED_APIS = [
     'iap.googleapis.com', 'billingbudgets.googleapis.com'
 ];
 
+const logStream = createWriteStream('setup-gcp.log', { flags: 'a' });
+
+const log = (message) => {
+    logStream.write(`${new Date().toISOString()}: ${message}\n`);
+};
+
 async function executeCommand(command) {
     log(`Executando comando: ${command}`);
     return new Promise((resolve, reject) => {
@@ -116,6 +122,7 @@ async function selectOrCreateProject(authClient) {
 
         log(`Tentando criar o projeto com ID: ${newProjectId}`);
         console.log(chalk.blue(`Criando o projeto "${newProjectId}"...`));
+        log(`Iniciando a criação do projeto com ID: ${newProjectId}`);
         await resourceManager.projects.create({
             requestBody: { projectId: newProjectId, name: `EXA Shield (${newProjectId})` },
             auth: authClient,
