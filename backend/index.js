@@ -1,12 +1,16 @@
-const express = require('express');
-const { google } = require('googleapis');
-const { GoogleGenAI } = require('@google/genai');
-const { Firestore } = require('@google-cloud/firestore');
-const cookieSession = require('cookie-session');
-const path = require('path');
+import express from 'express';
+import { google } from 'googleapis';
+import { GoogleGenAI } from '@google/genai';
+import { Firestore } from '@google-cloud/firestore';
+import cookieSession from 'cookie-session';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 3002;
 
 // --- Configuração ---
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
@@ -17,7 +21,9 @@ const COOKIE_SECRET_KEY_2 = process.env.COOKIE_SECRET_KEY_2 || 'super-secret-key
 const REDIRECT_URI = process.env.REDIRECT_URI || 'http://localhost:3001/api/auth/google/callback';
 
 // --- Inicialização dos Clientes ---
-const firestore = new Firestore();
+const firestore = new Firestore({
+    projectId: process.env.GCP_PROJECT_ID,
+});
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 
 const oauth2Client = new google.auth.OAuth2(
@@ -208,6 +214,12 @@ async function runAnalysis(userId) {
 // --- Endpoints da API ---
 
 app.get('/api/auth/google', (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    console.error('As credenciais do Google (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET) não foram encontradas no ambiente.');
+    return res.status(500).json({
+      message: 'Erro de configuração no servidor: As credenciais do Google não foram encontradas. Verifique o arquivo backend/.env e reinicie o servidor.'
+    });
+  }
   try {
     const scopes = [
       'https://www.googleapis.com/auth/userinfo.profile',
@@ -222,7 +234,7 @@ app.get('/api/auth/google', (req, res) => {
     res.json({ authUrl });
   } catch (error) {
     console.error('Erro ao gerar URL de autenticação:', error);
-    res.status(500).json({ message: 'Erro ao gerar URL de autenticação.' });
+    res.status(500).json({ message: 'Erro interno ao gerar a URL de autenticação do Google.' });
   }
 });
 
@@ -252,7 +264,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     req.session.userId = userId;
 
-    res.redirect('/');
+    res.redirect('/dashboard');
   } catch (error) {
     console.error('Erro no callback do Google Auth:', error);
     res.status(500).send('Falha na autenticação.');
@@ -261,12 +273,24 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => {
   req.session = null;
-  res.status(204).send();
+  res.json({ message: 'Logout bem-sucedido.' });
 });
 
-
-app.get('/api/auth/status', (req, res) => {
-  res.json({ hasToken: !!req.session.userId });
+app.get('/api/auth/status', async (req, res) => {
+  if (!req.session.userId) {
+    return res.json({ isAuthenticated: false });
+  }
+  try {
+    const userDoc = await firestore.collection('users').doc(req.session.userId).get();
+    if (!userDoc.exists) {
+      req.session = null; // Limpa a sessão inválida
+      return res.json({ isAuthenticated: false });
+    }
+    res.json({ isAuthenticated: true, user: userDoc.data().profile });
+  } catch (error) {
+    console.error('Erro ao verificar status de autenticação:', error);
+    res.status(500).json({ isAuthenticated: false, message: 'Erro interno no servidor.' });
+  }
 });
 
 app.get('/api/user', isAuthenticated, async (req, res) => {
