@@ -60,6 +60,18 @@ const SettingsPage = () => {
     setLocalSettings((prev: any) => ({ ...prev, apiKey: e.target.value }));
   };
 
+  const handleSesConfigChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value } = e.target;
+    setLocalSettings((prev: any) => ({
+      ...prev,
+      notifications: { ...prev.notifications, ses: { ...prev.notifications.ses, [name]: value } }
+    }));
+  };
+
+  const handleScheduleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setLocalSettings((prev: any) => ({ ...prev, schedule: e.target.value }));
+  };
+
   const handleSave = async () => {
     await saveSettings(localSettings);
     fetchSettings();
@@ -145,8 +157,104 @@ const SettingsPage = () => {
         </div>
       </div>
 
+      <div>
+        <h2 className="text-xl font-semibold text-white">Configurações de Notificação (AWS SES)</h2>
+        <p className="mt-1 text-slate-400">
+          Configure o envio de alertas por e-mail via Amazon SES.
+        </p>
+        <div className="mt-4 grid grid-cols-1 gap-y-4 gap-x-4 rounded-md border border-slate-700 bg-slate-800/50 p-4 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <label htmlFor="sesEnabled" className="block text-sm font-medium text-slate-300">Status</label>
+            <select
+              id="sesEnabled"
+              name="enabled"
+              value={localSettings.notifications?.ses?.enabled || 'false'}
+              onChange={handleSesConfigChange}
+              className="mt-1 block w-full rounded-md border-slate-600 bg-slate-900 text-slate-200 shadow-sm focus:border-sky-500 focus:ring-sky-500"
+            >
+              <option value="true">Ativado</option>
+              <option value="false">Desativado</option>
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="sesAccessKey" className="block text-sm font-medium text-slate-300">AWS Access Key ID</label>
+            <input
+              type="password"
+              id="sesAccessKey"
+              name="accessKey"
+              value={localSettings.notifications?.ses?.accessKey || ''}
+              onChange={handleSesConfigChange}
+              className="mt-1 block w-full rounded-md border-slate-600 bg-slate-900 text-slate-200 shadow-sm focus:border-sky-500 focus:ring-sky-500"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="sesSecretKey" className="block text-sm font-medium text-slate-300">AWS Secret Access Key</label>
+            <input
+              type="password"
+              id="sesSecretKey"
+              name="secretKey"
+              value={localSettings.notifications?.ses?.secretKey || ''}
+              onChange={handleSesConfigChange}
+              className="mt-1 block w-full rounded-md border-slate-600 bg-slate-900 text-slate-200 shadow-sm focus:border-sky-500 focus:ring-sky-500"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="sesRegion" className="block text-sm font-medium text-slate-300">AWS Region</label>
+            <input
+              type="text"
+              id="sesRegion"
+              name="region"
+              value={localSettings.notifications?.ses?.region || ''}
+              onChange={handleSesConfigChange}
+              className="mt-1 block w-full rounded-md border-slate-600 bg-slate-900 text-slate-200 shadow-sm focus:border-sky-500 focus:ring-sky-500"
+              placeholder="us-east-1"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="sesEmail" className="block text-sm font-medium text-slate-300">E-mail para Alertas</label>
+            <input
+              type="email"
+              id="sesEmail"
+              name="email"
+              value={localSettings.notifications?.ses?.email || ''}
+              onChange={handleSesConfigChange}
+              className="mt-1 block w-full rounded-md border-slate-600 bg-slate-900 text-slate-200 shadow-sm focus:border-sky-500 focus:ring-sky-500"
+              placeholder="alguem@example.com"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h2 className="text-xl font-semibold text-white">Automação da Análise</h2>
+        <p className="mt-1 text-slate-400">
+          Configure a frequência com que o EXA Shield deve verificar os logs automaticamente.
+        </p>
+        <div className="mt-4 grid grid-cols-1 gap-y-4 gap-x-4 rounded-md border border-slate-700 bg-slate-800/50 p-4 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <label htmlFor="scheduleEnabled" className="block text-sm font-medium text-slate-300">Análise Automática</label>
+            <select
+              id="scheduleEnabled"
+              name="schedule"
+              value={localSettings.schedule || 'disabled'}
+              onChange={handleScheduleChange}
+              className="mt-1 block w-full rounded-md border-slate-600 bg-slate-900 text-slate-200 shadow-sm focus:border-sky-500 focus:ring-sky-500"
+            >
+              <option value="disabled">Desativado</option>
+              <option value="30m">A cada 30 minutos</option>
+              <option value="1h">A cada hora</option>
+              <option value="daily">Diariamente</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
        <div>
-        <h2 className="text-xl font-semibold text-white">Status da Automação</h2>
+        <h2 className="text-xl font-semibold text-white">Status da Análise Manual</h2>
         <div className="mt-4 grid grid-cols-1 gap-4 rounded-md border border-slate-700 bg-slate-800/50 p-4 sm:grid-cols-3">
            <div className="flex items-center space-x-3">
              <SignalIcon className={`h-8 w-8 ${localSettings.isAnalysisRunning ? 'text-sky-400 animate-pulse' : 'text-green-500'}`} />
