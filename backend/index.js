@@ -1,12 +1,17 @@
-const express = require('express');
-const { google } = require('googleapis');
-const { GoogleGenAI } = require('@google/genai');
-const { Firestore } = require('@google-cloud/firestore');
-const cookieSession = require('cookie-session');
-const path = require('path');
+import express from 'express';
+import { google } from 'googleapis';
+import { GoogleGenAI } from '@google/genai';
+import { Firestore } from '@google-cloud/firestore';
+import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
+import cookieSession from 'cookie-session';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 3002;
 
 // --- Configuração ---
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
@@ -17,7 +22,9 @@ const COOKIE_SECRET_KEY_2 = process.env.COOKIE_SECRET_KEY_2 || 'super-secret-key
 const REDIRECT_URI = process.env.REDIRECT_URI || 'http://localhost:3001/api/auth/google/callback';
 
 // --- Inicialização dos Clientes ---
-const firestore = new Firestore();
+const firestore = new Firestore({
+    projectId: process.env.GCP_PROJECT_ID,
+});
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 
 const oauth2Client = new google.auth.OAuth2(
@@ -80,7 +87,17 @@ async function fetchLogsFromGoogle(client, dataSources) {
                 });
                 return res.data.items || [];
             } catch (error) {
-                console.error(`Erro ao buscar logs de ${sourceName}:`, error.message);
+                if (error.code === 403) {
+                    console.error(
+                        `ALERTA DE PERMISSÃO: A conta não tem privilégios de administrador ` +
+                        `suficientes para buscar logs de toda a organização ('userKey: "all"'). ` +
+                        `Certifique-se de que o usuário autenticado (${client.credentials.email_address}) ` +
+                        `tenha um papel de administrador com permissão para "Relatórios". ` +
+                        `Fonte do erro: ${sourceName}.`
+                    );
+                } else {
+                    console.error(`Erro ao buscar logs de ${sourceName}:`, error.message);
+                }
                 return [];
             }
         });
@@ -90,20 +107,36 @@ async function fetchLogsFromGoogle(client, dataSources) {
 
     if (allEvents.length === 0) return [];
 
-    return allEvents.map(item => ({
-        actor: item.actor.email,
-        time: item.id.time,
-        application: item.id.applicationName,
-        eventName: item.events[0].name,
-        details: item.events[0].parameters.map(p => `${p.name}: ${p.value || p.multiValue}`).join('; ')
-    }));
+    return allEvents
+      .map(item => {
+        // Verificação defensiva: Garante que o item tenha a estrutura esperada.
+        if (!item || !item.events || item.events.length === 0) {
+          return null;
+        }
+
+        const event = item.events[0];
+        const parameters = event.parameters || [];
+
+        return {
+          actor: item.actor?.email || 'N/A',
+          time: item.id?.time || 'N/A',
+          application: item.id?.applicationName || 'N/A',
+          eventName: event.name || 'N/A',
+          details: parameters.map(p => `${p.name}: ${p.value || p.multiValue || ''}`).join('; ')
+        };
+      })
+      .filter(Boolean); // Remove quaisquer entradas nulas resultantes da verificação defensiva.
 }
 
-async function generateAlertsFromLogs(logs, keywords) {
-    const prompt = `
-        Você é o EXA Shield, um analista de segurança de IA de elite. Sua missão é analisar logs do Google Workspace para identificar ameaças internas e vazamento de dados, focando nas palavras-chave de risco: ${keywords.join(', ')}.
+async function generateAlertsFromLogs(logs, settings) {
+    const { keywords, aiPrompt, apiKey } = settings;
+    const customAI = apiKey ? new GoogleGenAI({ apiKey }) : ai;
 
-        Analise os logs abaixo. Para cada ameaça identificada, gere um alerta detalhado. Se nenhuma ameaça for encontrada, retorne um array vazio.
+    // Substitui um placeholder no prompt pelas palavras-chave
+    const promptWithKeywords = aiPrompt.replace('${keywords}', keywords.join(', '));
+
+    const finalPrompt = `
+        ${promptWithKeywords}
 
         Logs para Análise:
         ${JSON.stringify(logs.slice(0, 150), null, 2)}
@@ -171,8 +204,62 @@ async function storeAlertsInFirestore(alerts, userId) {
     });
     await batch.commit();
     console.log(`${alerts.length} novos alertas detalhados foram gerados para ${userId}.`);
+
+    const settingsDoc = await firestore.collection('settings').doc(userId).get();
+    const settings = settingsDoc.data();
+
+    if (settings.notifications?.ses?.enabled === 'true') {
+        for (const alert of alerts) {
+            await sendNotificationEmail(alert, settings.notifications.ses);
+        }
+    }
 }
 
+async function sendNotificationEmail(alert, sesConfig) {
+    if (!sesConfig.accessKey || !sesConfig.secretKey || !sesConfig.region || !sesConfig.email) {
+        console.log('Configurações do AWS SES incompletas. E-mail não enviado.');
+        return;
+    }
+
+    const sesClient = new SESClient({
+        region: sesConfig.region,
+        credentials: {
+            accessKeyId: sesConfig.accessKey,
+            secretAccessKey: sesConfig.secretKey,
+        },
+    });
+
+    const emailBody = `
+        <h1>Alerta de Segurança do EXA Shield</h1>
+        <p><strong>Título:</strong> ${alert.title}</p>
+        <p><strong>Resumo:</strong> ${alert.summary}</p>
+        <p><strong>Severidade:</strong> ${alert.severity}</p>
+        <p><strong>Usuário:</strong> ${alert.user}</p>
+        <p><strong>Data:</strong> ${new Date(alert.timestamp).toLocaleString()}</p>
+        <hr>
+        <h3>Análise da IA</h3>
+        <p>${alert.reasoning.replace(/\n/g, '<br>')}</p>
+        <hr>
+        <h3>Evidências</h3>
+        <pre>${JSON.stringify(alert.evidence, null, 2)}</pre>
+    `;
+
+    const command = new SendEmailCommand({
+        Destination: { ToAddresses: [sesConfig.email] },
+        Message: {
+            Body: { Html: { Data: emailBody } },
+            Subject: { Data: `EXA Shield: Alerta de Segurança - ${alert.title}` },
+        },
+        Source: sesConfig.email,
+    });
+
+    try {
+        await sesClient.send(command);
+        console.log(`E-mail de notificação enviado para ${sesConfig.email} para o alerta "${alert.title}".`);
+    } catch (error) {
+        console.error(`Falha ao enviar e-mail via AWS SES:`, error);
+    }
+}
 
 async function runAnalysis(userId) {
     console.log(`[${new Date().toISOString()}] Iniciando análise para o usuário: ${userId}`);
@@ -193,7 +280,7 @@ async function runAnalysis(userId) {
             return;
         }
 
-        const alerts = await generateAlertsFromLogs(simplifiedLogs, settings.keywords);
+        const alerts = await generateAlertsFromLogs(simplifiedLogs, settings);
         await storeAlertsInFirestore(alerts, userId);
 
     } catch (error) {
@@ -208,6 +295,12 @@ async function runAnalysis(userId) {
 // --- Endpoints da API ---
 
 app.get('/api/auth/google', (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    console.error('As credenciais do Google (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET) não foram encontradas no ambiente.');
+    return res.status(500).json({
+      message: 'Erro de configuração no servidor: As credenciais do Google não foram encontradas. Verifique o arquivo backend/.env e reinicie o servidor.'
+    });
+  }
   try {
     const scopes = [
       'https://www.googleapis.com/auth/userinfo.profile',
@@ -222,7 +315,7 @@ app.get('/api/auth/google', (req, res) => {
     res.json({ authUrl });
   } catch (error) {
     console.error('Erro ao gerar URL de autenticação:', error);
-    res.status(500).json({ message: 'Erro ao gerar URL de autenticação.' });
+    res.status(500).json({ message: 'Erro interno ao gerar a URL de autenticação do Google.' });
   }
 });
 
@@ -252,7 +345,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     req.session.userId = userId;
 
-    res.redirect('/');
+    res.redirect('/dashboard');
   } catch (error) {
     console.error('Erro no callback do Google Auth:', error);
     res.status(500).send('Falha na autenticação.');
@@ -261,12 +354,24 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => {
   req.session = null;
-  res.status(204).send();
+  res.json({ message: 'Logout bem-sucedido.' });
 });
 
-
-app.get('/api/auth/status', (req, res) => {
-  res.json({ hasToken: !!req.session.userId });
+app.get('/api/auth/status', async (req, res) => {
+  if (!req.session.userId) {
+    return res.json({ isAuthenticated: false });
+  }
+  try {
+    const userDoc = await firestore.collection('users').doc(req.session.userId).get();
+    if (!userDoc.exists) {
+      req.session = null; // Limpa a sessão inválida
+      return res.json({ isAuthenticated: false });
+    }
+    res.json({ isAuthenticated: true, user: userDoc.data().profile });
+  } catch (error) {
+    console.error('Erro ao verificar status de autenticação:', error);
+    res.status(500).json({ isAuthenticated: false, message: 'Erro interno no servidor.' });
+  }
 });
 
 app.get('/api/user', isAuthenticated, async (req, res) => {
@@ -289,6 +394,20 @@ app.get('/api/settings', isAuthenticated, async (req, res) => {
         keywords: ['confidencial', 'privado', 'senha', 'salário'],
         isAnalysisRunning: false,
         lastRunTimestamp: null,
+        aiPrompt: `
+          Você é o EXA Shield, um analista de segurança de IA de elite. Sua missão é analisar logs do Google Workspace para identificar ameaças internas e vazamento de dados, focando nas palavras-chave de risco fornecidas.
+          Analise os logs abaixo. Para cada ameaça identificada, gere um alerta detalhado. Se nenhuma ameaça for encontrada, retorne um array vazio.
+        `.trim(),
+        apiKey: '',
+        notifications: {
+          ses: {
+            enabled: 'false',
+            accessKey: '',
+            secretKey: '',
+            region: '',
+            email: '',
+          }
+        }
       };
       await settingsRef.set(defaultSettings);
       res.json(defaultSettings);
