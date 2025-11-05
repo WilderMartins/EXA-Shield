@@ -86,7 +86,17 @@ async function fetchLogsFromGoogle(client, dataSources) {
                 });
                 return res.data.items || [];
             } catch (error) {
-                console.error(`Erro ao buscar logs de ${sourceName}:`, error.message);
+                if (error.code === 403) {
+                    console.error(
+                        `ALERTA DE PERMISSÃO: A conta não tem privilégios de administrador ` +
+                        `suficientes para buscar logs de toda a organização ('userKey: "all"'). ` +
+                        `Certifique-se de que o usuário autenticado (${client.credentials.email_address}) ` +
+                        `tenha um papel de administrador com permissão para "Relatórios". ` +
+                        `Fonte do erro: ${sourceName}.`
+                    );
+                } else {
+                    console.error(`Erro ao buscar logs de ${sourceName}:`, error.message);
+                }
                 return [];
             }
         });
@@ -96,13 +106,25 @@ async function fetchLogsFromGoogle(client, dataSources) {
 
     if (allEvents.length === 0) return [];
 
-    return allEvents.map(item => ({
-        actor: item.actor.email,
-        time: item.id.time,
-        application: item.id.applicationName,
-        eventName: item.events[0].name,
-        details: item.events[0].parameters.map(p => `${p.name}: ${p.value || p.multiValue}`).join('; ')
-    }));
+    return allEvents
+      .map(item => {
+        // Verificação defensiva: Garante que o item tenha a estrutura esperada.
+        if (!item || !item.events || item.events.length === 0) {
+          return null;
+        }
+
+        const event = item.events[0];
+        const parameters = event.parameters || [];
+
+        return {
+          actor: item.actor?.email || 'N/A',
+          time: item.id?.time || 'N/A',
+          application: item.id?.applicationName || 'N/A',
+          eventName: event.name || 'N/A',
+          details: parameters.map(p => `${p.name}: ${p.value || p.multiValue || ''}`).join('; ')
+        };
+      })
+      .filter(Boolean); // Remove quaisquer entradas nulas resultantes da verificação defensiva.
 }
 
 async function generateAlertsFromLogs(logs, keywords) {
