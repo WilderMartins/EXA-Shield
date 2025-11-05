@@ -5,12 +5,9 @@ import { Firestore } from '@google-cloud/firestore';
 import cookieSession from 'cookie-session';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 const app = express();
 const port = process.env.PORT || 3002;
@@ -265,7 +262,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     req.session.userId = userId;
 
-    res.redirect('/');
+    res.redirect('/dashboard');
   } catch (error) {
     console.error('Erro no callback do Google Auth:', error);
     res.status(500).send('Falha na autenticação.');
@@ -274,12 +271,24 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => {
   req.session = null;
-  res.status(204).send();
+  res.json({ message: 'Logout bem-sucedido.' });
 });
 
-
-app.get('/api/auth/status', (req, res) => {
-  res.json({ hasToken: !!req.session.userId });
+app.get('/api/auth/status', async (req, res) => {
+  if (!req.session.userId) {
+    return res.json({ isAuthenticated: false });
+  }
+  try {
+    const userDoc = await firestore.collection('users').doc(req.session.userId).get();
+    if (!userDoc.exists) {
+      req.session = null; // Limpa a sessão inválida
+      return res.json({ isAuthenticated: false });
+    }
+    res.json({ isAuthenticated: true, user: userDoc.data().profile });
+  } catch (error) {
+    console.error('Erro ao verificar status de autenticação:', error);
+    res.status(500).json({ isAuthenticated: false, message: 'Erro interno no servidor.' });
+  }
 });
 
 app.get('/api/user', isAuthenticated, async (req, res) => {
