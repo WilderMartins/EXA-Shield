@@ -52,6 +52,14 @@ const SettingsPage = () => {
     setLocalSettings((prev: any) => ({ ...prev, keywords: e.target.value.split(',').map(k => k.trim()) }));
   };
 
+  const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setLocalSettings((prev: any) => ({ ...prev, aiPrompt: e.target.value }));
+  };
+
+  const handleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setLocalSettings((prev: any) => ({ ...prev, apiKey: e.target.value }));
+  };
+
   const handleSave = async () => {
     await saveSettings(localSettings);
     fetchSettings();
@@ -104,6 +112,37 @@ const SettingsPage = () => {
           className="mt-4 block w-full rounded-md border-slate-600 bg-slate-900 text-slate-200 shadow-sm focus:border-sky-500 focus:ring-sky-500"
           placeholder="Ex: confidencial, senha, CPF, projeto_secreto"
         />
+      </div>
+
+      <div>
+        <h2 className="text-xl font-semibold text-white">Configurações da Inteligência Artificial</h2>
+        <p className="mt-1 text-slate-400">
+          Personalize o prompt da IA e, opcionalmente, forneça sua própria chave da API do Google Gemini.
+        </p>
+        <div className="mt-4 space-y-4">
+          <div>
+            <label htmlFor="apiKey" className="block text-sm font-medium text-slate-300">Chave da API do Google Gemini (Opcional)</label>
+            <input
+              type="password"
+              id="apiKey"
+              value={localSettings.apiKey || ''}
+              onChange={handleApiKeyChange}
+              className="mt-1 block w-full rounded-md border-slate-600 bg-slate-900 text-slate-200 shadow-sm focus:border-sky-500 focus:ring-sky-500"
+              placeholder="Deixe em branco para usar a chave padrão"
+            />
+          </div>
+          <div>
+            <label htmlFor="aiPrompt" className="block text-sm font-medium text-slate-300">Prompt da IA</label>
+            <textarea
+              id="aiPrompt"
+              value={localSettings.aiPrompt || ''}
+              onChange={handlePromptChange}
+              rows={8}
+              className="mt-1 block w-full rounded-md border-slate-600 bg-slate-900 text-slate-200 shadow-sm focus:border-sky-500 focus:ring-sky-500"
+              placeholder="Descreva como a IA deve analisar os logs..."
+            />
+          </div>
+        </div>
       </div>
 
        <div>

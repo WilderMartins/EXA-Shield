@@ -127,11 +127,15 @@ async function fetchLogsFromGoogle(client, dataSources) {
       .filter(Boolean); // Remove quaisquer entradas nulas resultantes da verificação defensiva.
 }
 
-async function generateAlertsFromLogs(logs, keywords) {
-    const prompt = `
-        Você é o EXA Shield, um analista de segurança de IA de elite. Sua missão é analisar logs do Google Workspace para identificar ameaças internas e vazamento de dados, focando nas palavras-chave de risco: ${keywords.join(', ')}.
+async function generateAlertsFromLogs(logs, settings) {
+    const { keywords, aiPrompt, apiKey } = settings;
+    const customAI = apiKey ? new GoogleGenAI({ apiKey }) : ai;
 
-        Analise os logs abaixo. Para cada ameaça identificada, gere um alerta detalhado. Se nenhuma ameaça for encontrada, retorne um array vazio.
+    // Substitui um placeholder no prompt pelas palavras-chave
+    const promptWithKeywords = aiPrompt.replace('${keywords}', keywords.join(', '));
+
+    const finalPrompt = `
+        ${promptWithKeywords}
 
         Logs para Análise:
         ${JSON.stringify(logs.slice(0, 150), null, 2)}
@@ -221,7 +225,7 @@ async function runAnalysis(userId) {
             return;
         }
 
-        const alerts = await generateAlertsFromLogs(simplifiedLogs, settings.keywords);
+        const alerts = await generateAlertsFromLogs(simplifiedLogs, settings);
         await storeAlertsInFirestore(alerts, userId);
 
     } catch (error) {
@@ -335,6 +339,11 @@ app.get('/api/settings', isAuthenticated, async (req, res) => {
         keywords: ['confidencial', 'privado', 'senha', 'salário'],
         isAnalysisRunning: false,
         lastRunTimestamp: null,
+        aiPrompt: `
+          Você é o EXA Shield, um analista de segurança de IA de elite. Sua missão é analisar logs do Google Workspace para identificar ameaças internas e vazamento de dados, focando nas palavras-chave de risco fornecidas.
+          Analise os logs abaixo. Para cada ameaça identificada, gere um alerta detalhado. Se nenhuma ameaça for encontrada, retorne um array vazio.
+        `.trim(),
+        apiKey: '',
       };
       await settingsRef.set(defaultSettings);
       res.json(defaultSettings);
