@@ -1,4 +1,3 @@
-
 import { exec } from 'child_process';
 import { google } from 'googleapis';
 import { writeFile } from 'fs/promises';
@@ -12,15 +11,20 @@ import path from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Reinicia o arquivo de log para esta execução
+const logStream = createWriteStream('setup-gcp.log');
+
+const log = (message, level = 'INFO') => {
+    const logMessage = `${new Date().toISOString()} [${level}]: ${message}\n`;
+    process.stdout.write(logMessage); // Escreve também no console
+    logStream.write(logMessage);
+};
+
 const OAUTH_SCOPES = ['https://www.googleapis.com/auth/cloud-platform'];
 const REQUIRED_APIS = [
-    'admin.googleapis.com',
-    'people.googleapis.com',
-    'generativelanguage.googleapis.com',
-    'firestore.googleapis.com',
-    'iam.googleapis.com',
-    'cloudresourcemanager.googleapis.com',
-    'iap.googleapis.com'
+    'admin.googleapis.com', 'people.googleapis.com', 'generativelanguage.googleapis.com',
+    'firestore.googleapis.com', 'iam.googleapis.com', 'cloudresourcemanager.googleapis.com',
+    'iap.googleapis.com', 'billingbudgets.googleapis.com'
 ];
 
 const logStream = createWriteStream('setup-gcp.log', { flags: 'a' });
@@ -32,17 +36,12 @@ const log = (message) => {
 async function executeCommand(command) {
     log(`Executando comando: ${command}`);
     return new Promise((resolve, reject) => {
-        exec(command, (error, stdout, stderr) => {
+        const proc = exec(command, (error, stdout, stderr) => {
             if (stdout) log(`STDOUT: ${stdout}`);
-            if (stderr) log(`STDERR: ${stderr}`);
-
+            if (stderr) log(`STDERR: ${stderr}`, 'WARN');
             if (error) {
-                log(`EXEC ERROR: ${error.message}`);
-                if (command.includes('gcloud auth application-default login')) {
-                    resolve(stderr);
-                } else {
-                    reject(new Error(`O comando falhou: ${command}\n${stderr || error.message}`));
-                }
+                log(`EXEC ERROR: ${error.message}`, 'ERROR');
+                reject(new Error(`O comando falhou: ${command}\n${stderr || error.message}`));
                 return;
             }
             resolve(stdout.trim());
@@ -51,85 +50,85 @@ async function executeCommand(command) {
 }
 
 async function getAuthenticatedClient() {
-    log('Iniciando a função getAuthenticatedClient.');
-    console.log(chalk.blue('Para autenticar, por favor, siga estes passos:'));
-    console.log(chalk.yellow('1. Abra um NOVO terminal. Não feche este.'));
-    console.log(chalk.yellow('2. No novo terminal, execute o seguinte comando:'));
-    console.log(chalk.bold.white('   gcloud auth application-default login'));
-    console.log(chalk.yellow('3. Siga as instruções no navegador para fazer o login e autorizar o acesso.'));
-    console.log(chalk.yellow('4. Após a conclusão, volte para este terminal.'));
-
-    await inquirer.prompt([
-        {
-            type: 'input',
-            name: 'continue',
-            message: 'Pressione Enter aqui quando tiver concluído a autenticação no outro terminal...',
-        },
-    ]);
-    log('O usuário pressionou Enter para continuar após a autenticação.');
+    log('Iniciando o processo de autenticação do usuário.');
+    console.log(chalk.blue('Passo 1: Autenticação com o Google Cloud'));
+    console.log(chalk.yellow('O EXA Shield precisa de permissão para gerenciar recursos do GCP em seu nome.'));
 
     try {
-        console.log(chalk.blue('Verificando status da autenticação...'));
-        log('Tentando obter o cliente de autenticação do Google.');
-        const auth = new google.auth.GoogleAuth({
-            scopes: OAUTH_SCOPES,
-        });
+        await executeCommand('gcloud auth application-default login --quiet');
+        log('Comando de login do gcloud executado.');
+    } catch (e) {
+        log(`O comando de login inicial falhou. Isso pode acontecer se o usuário interromper o fluxo. Erro: ${e.message}`, 'WARN');
+    }
+
+    log('Verificando o status da autenticação.');
+    try {
+        const user = await executeCommand('gcloud config get-value account');
+        if (!user) {
+             throw new Error('Nenhum usuário autenticado encontrado.');
+        }
+        log(`Autenticação verificada para o usuário: ${user}`);
+        console.log(chalk.green(`\n✓ Autenticado com sucesso como: ${user}`));
+
+        const auth = new google.auth.GoogleAuth({ scopes: OAUTH_SCOPES });
         const client = await auth.getClient();
-        console.log(chalk.green('Autenticação bem-sucedida!'));
         log('Cliente de autenticação do Google obtido com sucesso.');
         return client;
+
     } catch (error) {
-        log(`ERRO na autenticação: ${error.stack}`);
-        console.error(chalk.red('Falha na autenticação. Verifique se o processo foi concluído corretamente no outro terminal.'));
-        console.error(chalk.cyan('Consulte o arquivo `setup-gcp.log` para mais detalhes.'));
+        log(`Falha na verificação da autenticação: ${error.stack}`, 'ERROR');
+        console.error(chalk.red('Falha na autenticação. Verifique se você completou o login no navegador.'));
+        console.error(chalk.cyan('Consulte o arquivo `setup-gcp.log` para detalhes.'));
         throw error;
     }
 }
 
 async function selectOrCreateProject(authClient) {
-    log('Iniciando a função selectOrCreateProject.');
+    log('Iniciando a seleção ou criação de projeto.');
     const resourceManager = google.cloudresourcemanager('v1');
 
-    console.log(chalk.blue('Buscando seus projetos existentes no Google Cloud...'));
-    log('Buscando a lista de projetos do GCP.');
-    const { data: { projects } } = await resourceManager.projects.list({ auth: authClient });
-    log(`Encontrados ${projects ? projects.length : 0} projetos.`);
+    console.log(chalk.blue('\nPasso 2: Seleção do Projeto no Google Cloud'));
+    console.log(chalk.yellow('Buscando seus projetos existentes...'));
+
+    let projects = [];
+    try {
+        const response = await resourceManager.projects.list({ auth: authClient });
+        projects = response.data.projects || [];
+        log(`Encontrados ${projects.length} projetos.`);
+    } catch (e) {
+        log(`Não foi possível listar os projetos: ${e.message}`, 'ERROR');
+        console.log(chalk.red('Não foi possível buscar seus projetos. Verifique suas permissões.'));
+    }
 
     const choices = [
         new inquirer.Separator(),
         { name: 'Criar um novo projeto', value: 'CREATE_NEW' },
         new inquirer.Separator(),
-        ...(projects ? projects.map(p => ({ name: `${p.name} (${p.projectId})`, value: p.projectId })) : [])
+        ...projects.map(p => ({ name: `${p.name} (${p.projectId})`, value: p.projectId }))
     ];
 
-    const { projectId } = await inquirer.prompt([
-        {
-            type: 'list',
-            name: 'projectId',
-            message: 'Selecione um projeto do Google Cloud ou crie um novo:',
-            choices: choices,
-            pageSize: 15,
-        },
-    ]);
+    const { projectId } = await inquirer.prompt([{
+        type: 'list', name: 'projectId',
+        message: 'Selecione um projeto existente ou crie um novo:',
+        choices: choices, pageSize: 15,
+    }]);
 
     if (projectId === 'CREATE_NEW') {
-        const { newProjectId } = await inquirer.prompt([
-            {
-                type: 'input',
-                name: 'newProjectId',
-                message: 'Digite um ID único para o novo projeto (ex: exa-shield-app):',
-                validate: input => !!input,
-            }
-        ]);
+        const { newProjectId } = await inquirer.prompt([{
+            type: 'input', name: 'newProjectId',
+            message: 'Digite um ID único para o novo projeto (ex: exa-shield-1234):',
+            validate: input => /^[a-z][a-z0-9-]{5,29}$/.test(input) ? true : 'ID inválido. Use letras minúsculas, números e hífens.',
+        }]);
 
+        log(`Tentando criar o projeto com ID: ${newProjectId}`);
         console.log(chalk.blue(`Criando o projeto "${newProjectId}"...`));
         log(`Iniciando a criação do projeto com ID: ${newProjectId}`);
         await resourceManager.projects.create({
-            requestBody: { projectId: newProjectId, name: `${newProjectId} App` },
+            requestBody: { projectId: newProjectId, name: `EXA Shield (${newProjectId})` },
             auth: authClient,
         });
-        console.log(chalk.green('Projeto criado com sucesso!'));
         log(`Projeto ${newProjectId} criado com sucesso.`);
+        console.log(chalk.green('✓ Projeto criado com sucesso!'));
         return newProjectId;
     }
 
@@ -137,201 +136,189 @@ async function selectOrCreateProject(authClient) {
     return projectId;
 }
 
-async function enableAPIs(projectId) {
-    log(`Iniciando a função enableAPIs para o projeto ${projectId}.`);
-    console.log(chalk.blue('Ativando as APIs necessárias... Isso pode levar alguns minutos.'));
+async function linkBilling(projectId) {
+    log(`Iniciando o processo de vinculação de faturamento para ${projectId}.`);
+    console.log(chalk.blue('\nPasso 3: Vinculação de Faturamento'));
 
-    for (const api of REQUIRED_APIS) {
-        log(`Tentando ativar a API: ${api}`);
+    try {
+        const billingAccounts = await executeCommand('gcloud beta billing accounts list --format="value(ACCOUNT_ID, DISPLAY_NAME)"');
+        if (!billingAccounts) {
+            log('Nenhuma conta de faturamento encontrada.', 'ERROR');
+            throw new Error('Nenhuma conta de faturamento encontrada.');
+        }
+
+        const choices = billingAccounts.split('\n').map(line => {
+            const [id, name] = line.split('\t');
+            return { name: `${name} (${id})`, value: id };
+        });
+
+        const { billingId } = await inquirer.prompt([{
+            type: 'list', name: 'billingId',
+            message: 'Selecione a conta de faturamento para associar a este projeto:',
+            choices: choices,
+        }]);
+
+        log(`Vinculando projeto ${projectId} à conta ${billingId}.`);
+        await executeCommand(`gcloud beta billing projects link ${projectId} --billing-account=${billingId}`);
+        log('Vinculação de faturamento bem-sucedida.');
+        console.log(chalk.green('✓ Faturamento vinculado com sucesso!'));
+
+    } catch (e) {
+         log(`Falha ao vincular o faturamento: ${e.message}.`, 'WARN');
+         console.log(chalk.yellow('Não foi possível vincular o faturamento automaticamente. Verifique se o projeto já está associado a uma conta no console do GCP.'));
+    }
+}
+
+async function enableAPIs(projectId) {
+    log(`Iniciando a ativação das APIs para ${projectId}.`);
+    console.log(chalk.blue('\nPasso 4: Ativando as APIs necessárias... (Isso pode levar vários minutos)'));
+
+    for (const [index, api] of REQUIRED_APIS.entries()) {
+        log(`Ativando API: ${api} (${index + 1}/${REQUIRED_APIS.length})`);
         try {
             await executeCommand(`gcloud services enable ${api} --project=${projectId}`);
-            console.log(chalk.green(`- API ${api} ativada com sucesso.`));
-            log(`API ${api} ativada com sucesso.`);
-        } catch(e) {
-            console.log(chalk.yellow(`- API ${api} já estava ativada ou falhou ao ativar. Verifique os logs.`));
-            log(`Falha ao ativar a API ${api}: ${e.message}`);
+            console.log(chalk.green(`  ✓ ${api}`));
+        } catch (e) {
+            log(`Falha ao ativar ${api}: ${e.message}`, 'WARN');
+            console.log(chalk.yellow(`  - ${api} (já ativada ou falhou)`));
         }
     }
-    log('Função enableAPIs concluída.');
+    log('Ativação de APIs concluída.');
 }
 
-async function deployFirestoreIndexes(projectId) {
-    log(`Iniciando a função deployFirestoreIndexes para o projeto ${projectId}.`);
-    console.log(chalk.blue('Criando os índices do Firestore para otimizar as consultas...'));
-    const indexFilePath = path.join(__dirname, 'backend', 'firestore.indexes.json');
-    try {
-        log('Tentando criar os índices do Firestore.');
-        await executeCommand(`gcloud firestore indexes composite create --project=${projectId} --database='(default)' ${indexFilePath}`);
-        console.log(chalk.green('Índices do Firestore criados com sucesso!'));
-        log('Índices do Firestore criados com sucesso.');
-    } catch (error) {
-        log(`ERRO ao criar os índices do Firestore: ${error.message}`);
-        if (error.message.includes('already exists')) {
-            console.log(chalk.yellow('Os índices do Firestore já existem.'));
-            log('Os índices do Firestore já existiam.');
-        } else {
-            console.error(chalk.red('Falha ao criar os índices do Firestore.'), error.message);
-            console.log(chalk.yellow('Você pode precisar criar o índice manualmente no console do Firebase.'));
-        }
-    }
-    log('Função deployFirestoreIndexes concluída.');
-}
+async function createFirestore(projectId) {
+    log(`Iniciando a criação do Firestore para ${projectId}.`);
+    console.log(chalk.blue('\nPasso 5: Configurando o Banco de Dados Firestore'));
 
-async function createFirestoreDatabase(projectId) {
-    log(`Iniciando a função createFirestoreDatabase para o projeto ${projectId}.`);
-    console.log(chalk.blue('Configurando o banco de dados Firestore...'));
+    const { location } = await inquirer.prompt([{
+        type: 'list', name: 'location',
+        message: 'Selecione a região para o banco de dados:',
+        choices: ['nam5 (United States)', 'eur3 (Europe)', 'southamerica-east1 (São Paulo)'],
+        default: 'southamerica-east1 (São Paulo)',
+    }]);
 
-    const { location } = await inquirer.prompt([
-        {
-            type: 'list',
-            name: 'location',
-            message: 'Selecione a região para o seu banco de dados Firestore:',
-            choices: [
-                'nam5 (United States)',
-                'eur3 (Europe)',
-                'southamerica-east1 (São Paulo, Brazil)',
-                'asia-south1 (Mumbai, India)'
-            ],
-            default: 'southamerica-east1 (São Paulo, Brazil)',
-        },
-    ]);
-    log(`Região do Firestore selecionada: ${location}`);
+    const locationId = location.split(' ')[0];
+    log(`Região selecionada: ${locationId}`);
 
     try {
-        log(`Tentando criar o banco de dados Firestore na região ${location.split(' ')[0]}.`);
-        await executeCommand(`gcloud firestore databases create --project=${projectId} --location=${location.split(' ')[0]} --type=firestore-native`);
-        console.log(chalk.green('Banco de dados Firestore criado com sucesso!'));
+        await executeCommand(`gcloud firestore databases create --project=${projectId} --location=${locationId} --type=firestore-native --quiet`);
         log('Banco de dados Firestore criado com sucesso.');
-    } catch(error) {
-        log(`ERRO ao criar o banco de dados Firestore: ${error.message}`);
-        if(error.message.includes('already exists')) {
-             console.log(chalk.yellow('Banco de dados Firestore já existe neste projeto.'));
-             log('O banco de dados Firestore já existia.');
+        console.log(chalk.green('✓ Banco de dados criado com sucesso!'));
+    } catch (error) {
+        if (error.message.includes('already exists')) {
+             log('O banco de dados Firestore já existe.', 'INFO');
+             console.log(chalk.yellow('✓ O banco de dados Firestore já existe.'));
         } else {
-            console.error(chalk.red('Falha ao criar o banco de dados Firestore.'), error.message);
+            log(`Erro ao criar o banco de dados: ${error.message}`, 'ERROR');
             throw error;
         }
     }
-    log('Função createFirestoreDatabase concluída.');
+
+    log('Implantando índices do Firestore.');
+    const indexFilePath = path.join(__dirname, 'backend', 'firestore.indexes.json');
+    try {
+        await executeCommand(`gcloud firestore indexes composite create --project=${projectId} --database='(default)' ${indexFilePath}`);
+        log('Índices do Firestore implantados com sucesso.');
+        console.log(chalk.green('✓ Índices do banco de dados otimizados!'));
+    } catch (error) {
+        if (error.message.includes('already exists')) {
+            log('Os índices do Firestore já existem.', 'INFO');
+            console.log(chalk.yellow('✓ Índices já otimizados.'));
+        } else {
+             log(`Erro ao criar índices: ${error.message}`, 'ERROR');
+        }
+    }
 }
 
-async function createOAuthCredentials(projectId, authClient) {
-    log(`Iniciando a função createOAuthCredentials para o projeto ${projectId}.`);
-    console.log(chalk.blue('Criando as credenciais de acesso OAuth 2.0...'));
+async function createCredentials(projectId, authClient) {
+    log(`Iniciando a criação de credenciais para ${projectId}.`);
     const iap = google.iap({ version: 'v1', auth: authClient });
     const redirectUri = 'http://localhost:3001/api/auth/google/callback';
 
-    try {
-        const { billingId } = await inquirer.prompt([
-            {
-                type: 'input',
-                name: 'billingId',
-                message: 'Digite o ID da sua conta de faturamento do Google Cloud:',
-                validate: input => !!input,
-            }
-        ]);
-        log(`Vinculando o projeto ${projectId} à conta de faturamento ${billingId}.`);
-        await executeCommand(`gcloud billing projects link ${projectId} --billing-account=${billingId}`);
-        log('Vinculação de faturamento bem-sucedida.');
-    } catch (e) {
-         log(`Falha ao vincular a conta de faturamento: ${e.message}. Presumindo que já está configurado.`);
-         console.log(chalk.yellow('O faturamento já parece estar configurado. Pulando esta etapa.'));
-    }
+    console.log(chalk.blue('\nPasso 6: Criando Credenciais de Acesso'));
 
-    // Create or get the OAuth Consent Screen (brand)
+    // 1. Tela de Consentimento OAuth
     let brandName;
     try {
-        console.log(chalk.blue('Criando a tela de consentimento OAuth...'));
-        log('Tentando criar a tela de consentimento OAuth.');
+        log('Criando a tela de consentimento OAuth.');
         const supportEmail = await executeCommand('gcloud config get-value account');
-        log(`Email de suporte obtido: ${supportEmail}`);
-        const { data: newBrand } = await iap.projects.brands.create({
+        const { data } = await iap.projects.brands.create({
             parent: `projects/${projectId}`,
-            requestBody: {
-                supportEmail: supportEmail.trim(),
-                applicationTitle: 'EXA Shield',
-            },
+            requestBody: { supportEmail: supportEmail.trim(), applicationTitle: 'EXA Shield' },
         });
-        brandName = newBrand.name;
-        console.log(chalk.green('Tela de consentimento criada com sucesso.'));
-        log(`Tela de consentimento criada com o nome: ${brandName}`);
+        brandName = data.name;
+        log(`Tela de consentimento criada: ${brandName}`);
+        console.log(chalk.green('  ✓ Tela de Consentimento OAuth criada.'));
     } catch (error) {
-        log(`ERRO ao criar a tela de consentimento: ${error.message}`);
-        if (error.code === 409) { // 409 Conflict means it already exists
-            console.log(chalk.yellow('A tela de consentimento já existe, buscando...'));
-            log('A tela de consentimento já existe. Tentando buscar a existente.');
-            const { data: { brands } } = await iap.projects.brands.list({
-                parent: `projects/${projectId}`,
-            });
-            if (brands && brands.length > 0) {
-                brandName = brands[0].name;
-                log(`Tela de consentimento existente encontrada: ${brandName}`);
-            } else {
-                 log('ERRO: A tela de consentimento supostamente existe, mas não foi encontrada.');
-                 throw new Error('Falha: A tela de consentimento existe mas não foi encontrada.');
-            }
+        if (error.code === 409) {
+            log('A tela de consentimento já existe, buscando...', 'INFO');
+            const { data } = await iap.projects.brands.list({ parent: `projects/${projectId}` });
+            brandName = data.brands[0].name;
+            console.log(chalk.yellow('  ✓ Tela de Consentimento OAuth já existe.'));
         } else {
-            console.error(chalk.red('Falha ao criar ou buscar a tela de consentimento.'), error.message);
+            log(`Erro ao criar tela de consentimento: ${error.message}`, 'ERROR');
             throw error;
         }
     }
 
-    if (!brandName) {
-        log('ERRO FATAL: Não foi possível determinar o nome da tela de consentimento (brand).');
-        throw new Error('Não foi possível determinar o nome da tela de consentimento (brand).');
+    // 2. Cliente OAuth
+    let clientId, clientSecret;
+    try {
+        log(`Criando o cliente OAuth sob a marca: ${brandName}`);
+        const { data } = await iap.projects.brands.identityAwareProxyClients.create({
+            parent: brandName,
+            requestBody: { displayName: 'EXA Shield Web Client' }
+        });
+        clientId = data.name.split('/')[3];
+        clientSecret = data.secret;
+        log(`Cliente OAuth criado: ${clientId}`);
+        console.log(chalk.green('  ✓ Cliente OAuth 2.0 criado.'));
+    } catch(e) {
+        log(`Erro ao criar cliente OAuth: ${e.message}`, 'ERROR');
+        throw e;
     }
 
-    console.log(chalk.blue('Criando o cliente OAuth...'));
-    log(`Criando o cliente OAuth sob a marca: ${brandName}`);
-    const { data } = await iap.projects.brands.identityAwareProxyClients.create({
-        parent: brandName, // Use the dynamically retrieved brand name
-        requestBody: {
-            displayName: 'EXA Shield Web Client'
-        }
-    });
-    log(`Cliente OAuth criado com sucesso. ClientID: ${data.name.split('/')[3]}`);
-
-    log('Função createOAuthCredentials concluída.');
-    return { clientId: data.name.split('/')[3], clientSecret: data.secret, redirectUri };
-}
-
-async function createApiKey(projectId) {
-    log(`Iniciando a função createApiKey para o projeto ${projectId}.`);
-    console.log(chalk.blue('Gerando a chave de API para o Gemini...'));
+    // 3. Chave de API Gemini
+    let apiKey;
     try {
-        const result = await executeCommand(`gcloud alpha services api-keys create --project=${projectId} --display-name="Gemini API Key"`);
-        const apiKey = result.substring(result.indexOf('key:') + 4).trim();
-        console.log(chalk.green('Chave de API gerada com sucesso.'));
-        log('Chave de API do Gemini criada com sucesso.');
-        return apiKey;
+        log('Criando chave de API para o Gemini.');
+        const res = await executeCommand(`gcloud alpha services api-keys create --project=${projectId} --display-name="Gemini API Key"`);
+        const keyMatch = res.match(/key:\s*(\S+)/);
+        if(!keyMatch) throw new Error("Não foi possível extrair a chave de API da resposta.");
+        apiKey = keyMatch[1];
+        log('Chave de API do Gemini criada.');
+        console.log(chalk.green('  ✓ Chave de API do Gemini criada.'));
     } catch (error) {
-        log(`ERRO ao criar a chave de API do Gemini: ${error.stack}`);
-        console.error(chalk.red('Falha ao criar a chave de API.'), error);
+        log(`Erro ao criar chave de API: ${error.stack}`, 'ERROR');
         throw error;
     }
+
+    return { clientId, clientSecret, redirectUri, apiKey };
 }
+
 
 async function main() {
     log('---=== Iniciando o Assistente de Configuração do EXA Shield ===---');
-    console.log(chalk.bold.yellow('---=== 🛡️  Assistente de Configuração do EXA Shield  ===---'));
-    console.log(chalk.gray('Um log detalhado será salvo em `setup-gcp.log`'));
+    console.log(chalk.bold.yellow('\n---=== 🛡️  Assistente de Configuração do EXA Shield  ===---'));
+    console.log(chalk.gray('Este assistente irá guiá-lo na configuração do seu ambiente no Google Cloud.'));
+    console.log(chalk.gray('Um log detalhado será salvo em `setup-gcp.log`\n'));
 
     try {
         const authClient = await getAuthenticatedClient();
         const projectId = await selectOrCreateProject(authClient);
 
+        await linkBilling(projectId);
         await enableAPIs(projectId);
 
-        console.log(chalk.blue('\nAguardando 60 segundos para que os serviços do Google Cloud sejam provisionados...'));
+        console.log(chalk.blue('\n...Aguardando 60 segundos para que as APIs sejam provisionadas...'));
+        log('Aguardando 60 segundos...');
         await new Promise(resolve => setTimeout(resolve, 60000));
+        log('Aguarde concluído.');
 
-        await createFirestoreDatabase(projectId);
-        await deployFirestoreIndexes(projectId);
+        await createFirestore(projectId);
+        const { clientId, clientSecret, redirectUri, apiKey } = await createCredentials(projectId, authClient);
 
-        const { clientId, clientSecret, redirectUri } = await createOAuthCredentials(projectId, authClient);
-        const apiKey = await createApiKey(projectId);
-
-        log('Todas as credenciais foram criadas com sucesso. Gerando o arquivo .env.');
+        log('Gerando o arquivo .env.');
         const envContent = `
 # Credenciais geradas pelo assistente de configuração do EXA Shield
 GCP_PROJECT_ID=${projectId}
@@ -340,7 +327,7 @@ GOOGLE_CLIENT_SECRET=${clientSecret}
 API_KEY=${apiKey}
 REDIRECT_URI=${redirectUri}
 
-# Chaves de segurança para os cookies da sessão
+# Chaves de segurança para os cookies da sessão (não altere)
 COOKIE_SECRET_KEY_1=${randomBytes(32).toString('hex')}
 COOKIE_SECRET_KEY_2=${randomBytes(32).toString('hex')}
 `.trim();
@@ -349,15 +336,15 @@ COOKIE_SECRET_KEY_2=${randomBytes(32).toString('hex')}
         log('Arquivo .env criado com sucesso.');
 
         console.log(chalk.bold.green('\n🎉 Configuração concluída com sucesso! 🎉'));
-        console.log(chalk.cyan('O arquivo `.env` foi criado em `.env` com suas credenciais.'));
+        console.log(chalk.cyan('O arquivo `.env` foi criado na raiz do projeto.'));
         console.log(chalk.yellow('\nPara iniciar a aplicação, execute:'));
         console.log(chalk.white('npm install && npm run dev'));
 
     } catch (error) {
-        log(`ERRO FATAL: ${error.stack || error}`);
-        console.error(chalk.red.bold('\nOcorreu um erro durante a configuração:'));
-        console.error(error.message);
-        console.error(chalk.cyan('Consulte o arquivo `setup-gcp.log` para mais detalhes.'));
+        log(`ERRO FATAL: ${error.stack || error}`, 'FATAL');
+        console.error(chalk.red.bold('\n❌ Ocorreu um erro crítico durante a configuração:'));
+        console.error(chalk.white(error.message));
+        console.error(chalk.cyan('Consulte o arquivo `setup-gcp.log` para um diagnóstico detalhado.'));
         process.exit(1);
     } finally {
         logStream.end();
