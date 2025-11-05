@@ -38,7 +38,7 @@ export const useApi = <T,>(endpoint: string, options: RequestInit = {}) => {
     } finally {
       setIsLoading(false);
     }
-  }, [endpoint, JSON.stringify(options)]);
+  }, [endpoint]);
 
   return { data, error, isLoading, execute };
 };

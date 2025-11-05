@@ -140,6 +140,22 @@ async function enableAPIs(projectId) {
     }
 }
 
+async function deployFirestoreIndexes(projectId) {
+    console.log(chalk.blue('Criando os índices do Firestore para otimizar as consultas...'));
+    const indexFilePath = path.join(__dirname, 'backend', 'firestore.indexes.json');
+    try {
+        await executeCommand(`gcloud firestore indexes composite create --project=${projectId} --database='(default)' ${indexFilePath}`);
+        console.log(chalk.green('Índices do Firestore criados com sucesso!'));
+    } catch (error) {
+        if (error.message.includes('already exists')) {
+            console.log(chalk.yellow('Os índices do Firestore já existem.'));
+        } else {
+            console.error(chalk.red('Falha ao criar os índices do Firestore.'), error.message);
+            console.log(chalk.yellow('Você pode precisar criar o índice manualmente no console do Firebase.'));
+        }
+    }
+}
+
 async function createFirestoreDatabase(projectId) {
     console.log(chalk.blue('Configurando o banco de dados Firestore...'));
 
@@ -264,6 +280,7 @@ async function main() {
         await new Promise(resolve => setTimeout(resolve, 60000));
 
         await createFirestoreDatabase(projectId);
+        await deployFirestoreIndexes(projectId);
 
         const { clientId, clientSecret, redirectUri } = await createOAuthCredentials(projectId, authClient);
         const apiKey = await createApiKey(projectId);

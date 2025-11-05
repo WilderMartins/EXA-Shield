@@ -274,16 +274,12 @@ const AlertsDashboard = () => {
 
 const Dashboard = () => {
     const [currentPage, setCurrentPage] = useState('alerts');
-    const { data: userData } = useApi('/api/user');
+    const { data: userData, execute: fetchUser } = useApi('/api/user');
     const { execute: doLogout } = useApi('/api/auth/logout', { method: 'POST' });
 
     useEffect(() => {
-        const fetchUser = async () => {
-            const { execute } = useApi('/api/user');
-            await execute();
-        }
         fetchUser();
-    }, []);
+    }, [fetchUser]);
 
     const handleLogout = async () => {
         await doLogout();

@@ -21,7 +21,9 @@ const COOKIE_SECRET_KEY_2 = process.env.COOKIE_SECRET_KEY_2 || 'super-secret-key
 const REDIRECT_URI = process.env.REDIRECT_URI || 'http://localhost:3001/api/auth/google/callback';
 
 // --- Inicialização dos Clientes ---
-const firestore = new Firestore();
+const firestore = new Firestore({
+    projectId: process.env.GCP_PROJECT_ID,
+});
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 
 const oauth2Client = new google.auth.OAuth2(
