@@ -10,7 +10,7 @@ const axios = require('axios');
 const cron = require('node-cron');
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 3002;
 
 // --- Configuração ---
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
@@ -21,7 +21,9 @@ const COOKIE_SECRET_KEY_2 = process.env.COOKIE_SECRET_KEY_2 || 'super-secret-key
 const REDIRECT_URI = process.env.REDIRECT_URI || 'http://localhost:3001/api/auth/google/callback';
 
 // --- Inicialização dos Clientes ---
-const firestore = new Firestore();
+const firestore = new Firestore({
+    projectId: process.env.GCP_PROJECT_ID,
+});
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 const scheduledTasks = new Map();
 
@@ -119,7 +121,17 @@ async function fetchLogsFromGoogle(client, dataSources) {
                 });
                 return res.data.items || [];
             } catch (error) {
-                console.error(`Erro ao buscar logs de ${sourceName}:`, error.message);
+                if (error.code === 403) {
+                    console.error(
+                        `ALERTA DE PERMISSÃO: A conta não tem privilégios de administrador ` +
+                        `suficientes para buscar logs de toda a organização ('userKey: "all"'). ` +
+                        `Certifique-se de que o usuário autenticado (${client.credentials.email_address}) ` +
+                        `tenha um papel de administrador com permissão para "Relatórios". ` +
+                        `Fonte do erro: ${sourceName}.`
+                    );
+                } else {
+                    console.error(`Erro ao buscar logs de ${sourceName}:`, error.message);
+                }
                 return [];
             }
         });
@@ -255,27 +267,9 @@ async function generateAlertsFromLogs(logs, keywords, prompt) {
         const text = response.text();
         return JSON.parse(text) || [];
     } catch (error) {
-        console.error("Erro ao gerar alertas com a IA:", error);
+        console.error('Erro durante o processo do Vault:', error.message);
         return [];
     }
-}
-
-async function storeAlertsInFirestore(alerts, userId) {
-    if (!Array.isArray(alerts) || alerts.length === 0) return;
-
-    const batch = firestore.batch();
-    alerts.forEach(alert => {
-        const alertRef = firestore.collection('alerts').doc();
-        const alertData = {
-          ...alert,
-          evidence: JSON.stringify(alert.evidence || []),
-          userId,
-          createdAt: new Date().toISOString()
-        };
-        batch.set(alertRef, alertData);
-    });
-    await batch.commit();
-    console.log(`${alerts.length} novos alertas detalhados foram gerados para ${userId}.`);
 }
 
 
@@ -336,6 +330,12 @@ async function runAnalysis(userId) {
 // --- Endpoints da API ---
 
 app.get('/api/auth/google', (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    console.error('As credenciais do Google (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET) não foram encontradas no ambiente.');
+    return res.status(500).json({
+      message: 'Erro de configuração no servidor: As credenciais do Google não foram encontradas. Verifique o arquivo backend/.env e reinicie o servidor.'
+    });
+  }
   try {
     const scopes = [
       'https://www.googleapis.com/auth/userinfo.profile',
@@ -351,7 +351,7 @@ app.get('/api/auth/google', (req, res) => {
     res.json({ authUrl });
   } catch (error) {
     console.error('Erro ao gerar URL de autenticação:', error);
-    res.status(500).json({ message: 'Erro ao gerar URL de autenticação.' });
+    res.status(500).json({ message: 'Erro interno ao gerar a URL de autenticação do Google.' });
   }
 });
 
@@ -381,7 +381,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     req.session.userId = userId;
 
-    res.redirect('/');
+    res.redirect('/dashboard');
   } catch (error) {
     console.error('Erro no callback do Google Auth:', error);
     res.status(500).send('Falha na autenticação.');
@@ -390,12 +390,24 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => {
   req.session = null;
-  res.status(204).send();
+  res.json({ message: 'Logout bem-sucedido.' });
 });
 
-
-app.get('/api/auth/status', (req, res) => {
-  res.json({ hasToken: !!req.session.userId });
+app.get('/api/auth/status', async (req, res) => {
+  if (!req.session.userId) {
+    return res.json({ isAuthenticated: false });
+  }
+  try {
+    const userDoc = await firestore.collection('users').doc(req.session.userId).get();
+    if (!userDoc.exists) {
+      req.session = null; // Limpa a sessão inválida
+      return res.json({ isAuthenticated: false });
+    }
+    res.json({ isAuthenticated: true, user: userDoc.data().profile });
+  } catch (error) {
+    console.error('Erro ao verificar status de autenticação:', error);
+    res.status(500).json({ isAuthenticated: false, message: 'Erro interno no servidor.' });
+  }
 });
 
 app.get('/api/user', isAuthenticated, async (req, res) => {
