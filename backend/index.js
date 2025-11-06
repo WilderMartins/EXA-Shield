@@ -7,7 +7,7 @@ const path = require('path');
 const Mbox = require('node-mbox');
 const { simpleParser } = require('mailparser');
 const axios = require('axios');
-const { Readable } = require('stream');
+const cron = require('node-cron');
 
 const app = express();
 const port = process.env.PORT || 3002;
@@ -25,6 +25,7 @@ const firestore = new Firestore({
     projectId: process.env.GCP_PROJECT_ID,
 });
 const ai = new GoogleGenAI({ apiKey: API_KEY });
+const scheduledTasks = new Map();
 
 const oauth2Client = new google.auth.OAuth2(
   GOOGLE_CLIENT_ID,
@@ -38,13 +39,48 @@ app.use(
   cookieSession({
     name: 'exa-shield-session',
     keys: [COOKIE_SECRET_KEY_1, COOKIE_SECRET_KEY_2],
-    maxAge: 24 * 60 * 60 * 1000 * 30, // 30 dias
+    maxAge: 24 * 60 * 60 * 1000 * 30,
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
   })
 );
 
 app.use(express.static(path.join(__dirname, '..')));
+
+// --- Funções de Agendamento ---
+
+function updateScheduler(userId, schedule) {
+    if (scheduledTasks.has(userId)) {
+        scheduledTasks.get(userId).stop();
+        scheduledTasks.delete(userId);
+    }
+
+    if (schedule && schedule.type !== 'disabled' && cron.validate(schedule.cron)) {
+        const task = cron.schedule(schedule.cron, () => {
+            console.log(`[Agendador] Executando análise agendada para o usuário: ${userId}`);
+            runAnalysis(userId);
+        }, {
+            timezone: "America/Sao_Paulo"
+        });
+        scheduledTasks.set(userId, task);
+        console.log(`[Agendador] Análise agendada para ${userId} com a expressão: ${schedule.cron}`);
+    } else {
+        console.log(`[Agendador] Agendamento desativado ou inválido para o usuário: ${userId}`);
+    }
+}
+
+async function initializeSchedulers() {
+    console.log('[Agendador] Inicializando agendadores para todos os usuários...');
+    const settingsSnapshot = await firestore.collection('settings').get();
+    settingsSnapshot.forEach(doc => {
+        const userId = doc.id;
+        const settings = doc.data();
+        if (settings.schedule) {
+            updateScheduler(userId, settings.schedule);
+        }
+    });
+    console.log('[Agendador] Agendadores inicializados.');
+}
 
 // --- Funções Auxiliares de Autenticação ---
 
@@ -67,8 +103,7 @@ async function getAuthenticatedClient(userId) {
   return client;
 }
 
-
-// --- Funções de Análise (Refatorado) ---
+// --- Funções de Análise ---
 
 async function fetchLogsFromGoogle(client, dataSources) {
     const admin = google.admin({ version: 'reports_v1', auth: client });
@@ -104,27 +139,15 @@ async function fetchLogsFromGoogle(client, dataSources) {
     const results = await Promise.all(fetchPromises);
     allEvents = results.flat();
 
-    if (allEvents.length === 0) return [];
+    if (!allEvents || allEvents.length === 0) return [];
 
-    return allEvents
-      .map(item => {
-        // Verificação defensiva: Garante que o item tenha a estrutura esperada.
-        if (!item || !item.events || item.events.length === 0) {
-          return null;
-        }
-
-        const event = item.events[0];
-        const parameters = event.parameters || [];
-
-        return {
-          actor: item.actor?.email || 'N/A',
-          time: item.id?.time || 'N/A',
-          application: item.id?.applicationName || 'N/A',
-          eventName: event.name || 'N/A',
-          details: parameters.map(p => `${p.name}: ${p.value || p.multiValue || ''}`).join('; ')
-        };
-      })
-      .filter(Boolean); // Remove quaisquer entradas nulas resultantes da verificação defensiva.
+    return allEvents.map(item => ({
+        actor: item.actor.email,
+        time: item.id.time,
+        application: item.id.applicationName,
+        eventName: item.events[0].name,
+        details: item.events[0].parameters ? item.events[0].parameters.map(p => `${p.name}: ${p.value || p.multiValue}`).join('; ') : ''
+    }));
 }
 
 async function parseMboxStream(stream) {
@@ -136,11 +159,11 @@ async function parseMboxStream(stream) {
             try {
                 const parsed = await simpleParser(msgStream);
                 logs.push({
-                    actor: parsed.from.text,
-                    time: parsed.date.toISOString(),
+                    actor: parsed.from ? parsed.from.text : 'N/A',
+                    time: parsed.date ? parsed.date.toISOString() : new Date().toISOString(),
                     application: 'vault_chat_or_gmail',
-                    eventName: parsed.subject,
-                    details: parsed.text
+                    eventName: parsed.subject || 'E-mail/Chat',
+                    details: parsed.text || ''
                 });
             } catch (err) {
                 console.error('Erro ao analisar a mensagem de e-mail:', err);
@@ -152,7 +175,7 @@ async function parseMboxStream(stream) {
     });
 }
 
-async function fetchLogsFromVault(client, matterId, dataSources) {
+async function fetchLogsFromVault(client, matterId) {
     console.log(`[Vault] Iniciando coleta para o matter ID: ${matterId}`);
     if (!matterId) {
         console.log("[Vault] ID da matéria não fornecido. Pulando.");
@@ -163,14 +186,9 @@ async function fetchLogsFromVault(client, matterId, dataSources) {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const exportOptions = {
-        mboxExportOptions: {
-            exportFormat: 'MBOX',
-        },
-    };
-
+    const exportOptions = { mboxExportOptions: { exportFormat: 'MBOX' } };
     const query = {
-        corpus: 'MAIL', // Focus on Mail and Chat, which are in MBOX
+        corpus: 'MAIL',
         dataScope: 'ALL_DATA',
         searchMethod: 'ENTIRE_ORG',
         startTime: thirtyDaysAgo.toISOString(),
@@ -183,19 +201,19 @@ async function fetchLogsFromVault(client, matterId, dataSources) {
         const exportRequest = await vault.matters.exports.create({
             matterId: matterId,
             requestBody: {
-                name: `Exportação de Análise do EXA Shield - ${new Date().toISOString()}`,
-                query: query,
-                exportOptions: exportOptions
+                name: `Exportação EXA Shield - ${new Date().toISOString()}`,
+                query,
+                exportOptions
             },
         });
 
         const exportId = exportRequest.data.id;
         console.log(`[Vault] Exportação criada com ID: ${exportId}. Aguardando conclusão...`);
-
+        
         let exportStatus;
         let isDone = false;
         while (!isDone) {
-            await new Promise(resolve => setTimeout(resolve, 15000)); // Poll every 15 seconds
+            await new Promise(resolve => setTimeout(resolve, 15000));
             const statusResponse = await vault.operations.get({ name: `operations/${exportId}` });
             isDone = statusResponse.data.done;
             if (isDone) {
@@ -204,7 +222,7 @@ async function fetchLogsFromVault(client, matterId, dataSources) {
                  console.log(`[Vault] Status da exportação: IN_PROGRESS...`);
             }
         }
-        
+
         if (exportStatus.response?.['@type'].includes('Export')) {
             const downloadDetails = exportStatus.response.cloudStorageSink;
             console.log(`[Vault] Exportação concluída. Baixando ${downloadDetails.files.length} arquivos...`);
@@ -213,7 +231,7 @@ async function fetchLogsFromVault(client, matterId, dataSources) {
             for (const file of downloadDetails.files) {
                  const downloadUrl = `https://storage.googleapis.com/download/storage/v1/b/${file.bucketName}/o/${file.objectName}?alt=media`;
                  const response = await axios.get(downloadUrl, {
-                    headers: { 'Authorization': `Bearer ${await client.getAccessToken()}` },
+                    headers: { 'Authorization': `Bearer ${(await client.getAccessToken()).token}` },
                     responseType: 'stream'
                  });
                  const parsedLogs = await parseMboxStream(response.data);
@@ -228,6 +246,27 @@ async function fetchLogsFromVault(client, matterId, dataSources) {
         }
 
     } catch (error) {
+        console.error('Erro durante o processo do Vault:', error.message || error);
+        return [];
+    }
+}
+
+async function generateAlertsFromLogs(logs, keywords, prompt) {
+    const model = ai.getGenerativeModel({
+        model: "gemini-pro",
+        generationConfig: {
+            responseMimeType: "application/json",
+        },
+    });
+
+    const fullPrompt = `${prompt}\n\nPalavras-chave de Risco para focar: ${keywords.join(', ')}\n\nLogs para Análise:\n${JSON.stringify(logs, null, 2)}`;
+
+    try {
+        const result = await model.generateContent(fullPrompt);
+        const response = await result.response;
+        const text = response.text();
+        return JSON.parse(text) || [];
+    } catch (error) {
         console.error('Erro durante o processo do Vault:', error.message);
         return [];
     }
@@ -235,7 +274,7 @@ async function fetchLogsFromVault(client, matterId, dataSources) {
 
 
 async function runAnalysis(userId) {
-    console.log(`[${new Date().toISOString()}] Iniciando análise para o usuário: ${userId}`);
+    console.log(`[Análise] Iniciando para o usuário: ${userId}`);
     const settingsRef = firestore.collection('settings').doc(userId);
     
     try {
@@ -251,28 +290,42 @@ async function runAnalysis(userId) {
 
         let vaultLogs = [];
         if (settings.vaultEnabled) {
-            vaultLogs = await fetchLogsFromVault(client, settings.vaultMatterId, settings.dataSources);
+            vaultLogs = await fetchLogsFromVault(client, settings.vaultMatterId);
         }
 
         const allLogs = [...adminLogs, ...vaultLogs];
 
         if (allLogs.length === 0) {
-            console.log("Nenhum evento encontrado para análise de nenhuma fonte.");
-            await settingsRef.update({ isAnalysisRunning: false }); // Ensure we stop the running state
+            console.log("[Análise] Nenhum evento encontrado.");
+            await settingsRef.update({ isAnalysisRunning: false });
             return;
         }
 
-        const alerts = await generateAlertsFromLogs(allLogs, settings.keywords, settings.aiPrompt);
+        console.log(`[Filtro] ${allLogs.length} logs totais. Filtrando com ${settings.keywords.length} palavras-chave.`);
+
+        const filteredLogs = allLogs.filter(log => {
+            const searchText = `${log.eventName} ${log.details}`.toLowerCase();
+            return settings.keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
+        });
+
+        if (filteredLogs.length === 0) {
+            console.log("[Filtro] Nenhum log correspondeu. Análise concluída sem chamar a IA.");
+            await settingsRef.update({ isAnalysisRunning: false });
+            return;
+        }
+
+        console.log(`[Filtro] ${filteredLogs.length} logs enviados para a IA.`);
+
+        const alerts = await generateAlertsFromLogs(filteredLogs, settings.keywords, settings.aiPrompt);
         await storeAlertsInFirestore(alerts, userId);
 
     } catch (error) {
-        console.error('Erro durante a execução da análise aprimorada:', error);
+        console.error('Erro durante a análise:', error);
     } finally {
         await settingsRef.update({ isAnalysisRunning: false });
-        console.log(`[${new Date().toISOString()}] Análise aprimorada finalizada para: ${userId}`);
+        console.log(`[Análise] Finalizada para: ${userId}`);
     }
 }
-
 
 // --- Endpoints da API ---
 
@@ -377,7 +430,7 @@ app.get('/api/settings', isAuthenticated, async (req, res) => {
         keywords: ['confidencial', 'privado', 'senha', 'salário'],
         isAnalysisRunning: false,
         lastRunTimestamp: null,
-        schedule: 'disabled',
+        schedule: { type: 'disabled', cron: '', time: '02:00', minute: '0' },
         vaultEnabled: false,
         vaultMatterId: '',
         aiPrompt: `### FUNÇÃO E OBJETIVO
@@ -441,75 +494,7 @@ Sua resposta DEVE ser um array de objetos JSON, seguindo estritamente este forma
 
 ### CONTEÚDO PARA ANÁLISE
 A seguir, uma lista de logs de eventos do Google Workspace em formato JSON. Cada objeto representa uma ação executada por um usuário. Analise estes logs para encontrar as ameaças.
-
-### EXEMPLOS DE SAÍDA
-
-**Exemplo 1: Vazamento de Dados**
-\`\`\`json
-[
-  {
-    "title": "Exfiltração de Dados Potencial para E-mail Pessoal",
-    "summary": "O usuário alterou a visibilidade de um documento sensível para 'público' e depois o compartilhou com um endereço de e-mail externo.",
-    "severity": "Alta",
-    "user": "usuario.insatisfeito@empresa.com",
-    "timestamp": "2024-10-27T14:10:00Z",
-    "reasoning": "O usuário \`usuario.insatisfeito@empresa.com\` realizou uma sequência de ações altamente suspeitas. Primeiro, o documento 'Plano Estratégico Q4' teve sua visibilidade alterada de 'privado' para 'qualquer um com o link'. Imediatamente depois, o mesmo usuário compartilhou este documento com um endereço de e-mail pessoal (\`fulano.pessoal@gmail.com\`). Esta sequência indica uma forte probabilidade de exfiltração intencional de dados confidenciais.",
-    "evidence": [
-      {
-        "actor": "usuario.insatisfeito@empresa.com",
-        "time": "2024-10-27T14:09:30Z",
-        "application": "drive",
-        "eventName": "change_document_visibility",
-        "details": "item_name: Plano Estratégico Q4; old_visibility: private; new_visibility: anyone_with_link"
-      },
-      {
-        "actor": "usuario.insatisfeito@empresa.com",
-        "time": "2024-10-27T14:10:00Z",
-        "application": "drive",
-        "eventName": "share_document",
-        "details": "item_name: Plano Estratégico Q4; target_user: fulano.pessoal@gmail.com"
-      }
-    ]
-  }
-]
-\`\`\`
-**Exemplo 2: Tentativa de Acesso Indevido**
-\`\`\`json
-[
-  {
-    "title": "Tentativa de Acesso Suspeita de Localização Incomum",
-    "summary": "Múltiplas tentativas de login falhas originadas da Rússia foram seguidas por um login bem-sucedido e download de múltiplos arquivos.",
-    "severity": "Média",
-    "user": "alvo.comprometido@empresa.com",
-    "timestamp": "2024-10-27T15:25:10Z",
-    "reasoning": "A conta do usuário \`alvo.comprometido@empresa.com\` registrou 5 tentativas de login mal-sucedidas de um endereço de IP localizado na Rússia. Logo em seguida, um login bem-sucedido ocorreu a partir do mesmo IP, que foi imediatamente seguido por uma ação de download em massa de 50 arquivos do Google Drive. Este padrão sugere que a conta pode ter sido comprometida e está sendo usada para roubo de informações.",
-    "evidence": [
-      {
-        "actor": "alvo.comprometido@empresa.com",
-        "time": "2024-10-27T15:20:00Z",
-        "application": "login",
-        "eventName": "login_failure",
-        "details": "ip_address: 91.207.175.82; reason: incorrect_password"
-      },
-      {
-        "actor": "alvo.comprometido@empresa.com",
-        "time": "2024-10-27T15:25:00Z",
-        "application": "login",
-        "eventName": "login_success",
-        "details": "ip_address: 91.207.175.82"
-      },
-      {
-        "actor": "alvo.comprometido@empresa.com",
-        "time": "2024-10-27T15:25:10Z",
-        "application": "drive",
-        "eventName": "download_multiple_files",
-        "details": "num_files: 50"
-      }
-    ]
-  }
-]
-\`\`\`
-        `.trim(),
+`,
         apiKey: '',
         notifications: {
           ses: {
@@ -531,8 +516,16 @@ A seguir, uma lista de logs de eventos do Google Workspace em formato JSON. Cada
 
 app.post('/api/settings', isAuthenticated, async (req, res) => {
   try {
-    const settingsRef = firestore.collection('settings').doc(req.session.userId);
-    await settingsRef.update(req.body);
+    const userId = req.session.userId;
+    const settingsRef = firestore.collection('settings').doc(userId);
+    const newSettings = req.body;
+
+    await settingsRef.update(newSettings);
+
+    if (newSettings.schedule) {
+        updateScheduler(userId, newSettings.schedule);
+    }
+
     res.status(200).json({ message: 'Configurações salvas.' });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -577,6 +570,7 @@ app.get(/^(?!\/api).+/, (req, res) => {
 if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && API_KEY) {
     app.listen(port, () => {
       console.log(`Backend do EXA Shield rodando na porta ${port}`);
+      initializeSchedulers();
     });
 } else {
     console.error('ERRO FATAL: As variáveis de ambiente GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET e API_KEY devem ser definidas.');
