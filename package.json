@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm:dev:frontend\" \"npm:dev:backend\"",
+    "dev": "concurrently \"sh -c 'npm run dev:frontend 2>&1 | tee frontend.log'\" \"sh -c 'npm run dev:backend 2>&1 | tee backend.log'\"",
     "dev:frontend": "vite",
     "dev:backend": "nodemon -r dotenv/config backend/index.js",
     "start": "vite build && node -r dotenv/config backend/index.js",

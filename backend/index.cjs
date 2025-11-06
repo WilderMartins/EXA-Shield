@@ -1,3 +1,4 @@
+require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
 const express = require('express');
 const { google } = require('googleapis');
 const { GoogleGenAI } = require('@google/genai');
@@ -21,9 +22,7 @@ const COOKIE_SECRET_KEY_2 = process.env.COOKIE_SECRET_KEY_2 || 'super-secret-key
 const REDIRECT_URI = process.env.REDIRECT_URI || 'http://localhost:3001/api/auth/google/callback';
 
 // --- Inicialização dos Clientes ---
-const firestore = new Firestore({
-    projectId: process.env.GCP_PROJECT_ID,
-});
+const firestore = new Firestore();
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 const scheduledTasks = new Map();
 
@@ -121,21 +120,11 @@ async function fetchLogsFromGoogle(client, dataSources) {
                 });
                 return res.data.items || [];
             } catch (error) {
-                if (error.code === 403) {
-                    console.error(
-                        `ALERTA DE PERMISSÃO: A conta não tem privilégios de administrador ` +
-                        `suficientes para buscar logs de toda a organização ('userKey: "all"'). ` +
-                        `Certifique-se de que o usuário autenticado (${client.credentials.email_address}) ` +
-                        `tenha um papel de administrador com permissão para "Relatórios". ` +
-                        `Fonte do erro: ${sourceName}.`
-                    );
-                } else {
-                    console.error(`Erro ao buscar logs de ${sourceName}:`, error.message);
-                }
+                console.error(`Erro ao buscar logs de ${sourceName}:`, error.message);
                 return [];
             }
         });
-    
+
     const results = await Promise.all(fetchPromises);
     allEvents = results.flat();
 
@@ -209,7 +198,7 @@ async function fetchLogsFromVault(client, matterId) {
 
         const exportId = exportRequest.data.id;
         console.log(`[Vault] Exportação criada com ID: ${exportId}. Aguardando conclusão...`);
-        
+
         let exportStatus;
         let isDone = false;
         while (!isDone) {
@@ -267,19 +256,37 @@ async function generateAlertsFromLogs(logs, keywords, prompt) {
         const text = response.text();
         return JSON.parse(text) || [];
     } catch (error) {
-        console.error('Erro durante o processo do Vault:', error.message);
+        console.error("Erro ao gerar alertas com a IA:", error);
         return [];
     }
+}
+
+async function storeAlertsInFirestore(alerts, userId) {
+    if (!Array.isArray(alerts) || alerts.length === 0) return;
+
+    const batch = firestore.batch();
+    alerts.forEach(alert => {
+        const alertRef = firestore.collection('alerts').doc();
+        const alertData = {
+          ...alert,
+          evidence: JSON.stringify(alert.evidence || []),
+          userId,
+          createdAt: new Date().toISOString()
+        };
+        batch.set(alertRef, alertData);
+    });
+    await batch.commit();
+    console.log(`${alerts.length} novos alertas detalhados foram gerados para ${userId}.`);
 }
 
 
 async function runAnalysis(userId) {
     console.log(`[Análise] Iniciando para o usuário: ${userId}`);
     const settingsRef = firestore.collection('settings').doc(userId);
-    
+
     try {
         await settingsRef.update({ isAnalysisRunning: true, lastRunTimestamp: new Date().toISOString() });
-        
+
         const settingsDoc = await settingsRef.get();
         if (!settingsDoc.exists) throw new Error('Configurações não encontradas.');
         const settings = settingsDoc.data();
@@ -330,12 +337,6 @@ async function runAnalysis(userId) {
 // --- Endpoints da API ---
 
 app.get('/api/auth/google', (req, res) => {
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-    console.error('As credenciais do Google (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET) não foram encontradas no ambiente.');
-    return res.status(500).json({
-      message: 'Erro de configuração no servidor: As credenciais do Google não foram encontradas. Verifique o arquivo backend/.env e reinicie o servidor.'
-    });
-  }
   try {
     const scopes = [
       'https://www.googleapis.com/auth/userinfo.profile',
@@ -351,7 +352,7 @@ app.get('/api/auth/google', (req, res) => {
     res.json({ authUrl });
   } catch (error) {
     console.error('Erro ao gerar URL de autenticação:', error);
-    res.status(500).json({ message: 'Erro interno ao gerar a URL de autenticação do Google.' });
+    res.status(500).json({ message: 'Erro ao gerar URL de autenticação.' });
   }
 });
 
@@ -373,7 +374,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
       email: userId,
       picture: profile.data.photos[0].url,
     };
-    
+
     await firestore.collection('users').doc(userId).set({
         profile: userData,
         tokens: tokens,
@@ -381,7 +382,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     req.session.userId = userId;
 
-    res.redirect('/dashboard');
+    res.redirect('/');
   } catch (error) {
     console.error('Erro no callback do Google Auth:', error);
     res.status(500).send('Falha na autenticação.');
@@ -390,24 +391,12 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => {
   req.session = null;
-  res.json({ message: 'Logout bem-sucedido.' });
+  res.status(204).send();
 });
 
-app.get('/api/auth/status', async (req, res) => {
-  if (!req.session.userId) {
-    return res.json({ isAuthenticated: false });
-  }
-  try {
-    const userDoc = await firestore.collection('users').doc(req.session.userId).get();
-    if (!userDoc.exists) {
-      req.session = null; // Limpa a sessão inválida
-      return res.json({ isAuthenticated: false });
-    }
-    res.json({ isAuthenticated: true, user: userDoc.data().profile });
-  } catch (error) {
-    console.error('Erro ao verificar status de autenticação:', error);
-    res.status(500).json({ isAuthenticated: false, message: 'Erro interno no servidor.' });
-  }
+
+app.get('/api/auth/status', (req, res) => {
+  res.json({ hasToken: !!req.session.userId });
 });
 
 app.get('/api/user', isAuthenticated, async (req, res) => {
@@ -539,7 +528,7 @@ app.get('/api/alerts', isAuthenticated, async (req, res) => {
             .orderBy('createdAt', 'desc')
             .limit(50)
             .get();
-            
+
         const alerts = snapshot.docs.map(doc => {
           const data = doc.data();
           try {
