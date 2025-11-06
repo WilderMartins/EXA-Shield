@@ -1,13 +1,13 @@
-import express from 'express';
-import { google } from 'googleapis';
-import { GoogleGenAI } from '@google/genai';
-import { Firestore } from '@google-cloud/firestore';
-import cookieSession from 'cookie-session';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require('express');
+const { google } = require('googleapis');
+const { GoogleGenAI } = require('@google/genai');
+const { Firestore } = require('@google-cloud/firestore');
+const cookieSession = require('cookie-session');
+const path = require('path');
+const Mbox = require('node-mbox');
+const { simpleParser } = require('mailparser');
+const axios = require('axios');
+const { Readable } = require('stream');
 
 const app = express();
 const port = process.env.PORT || 3002;
@@ -127,82 +127,110 @@ async function fetchLogsFromGoogle(client, dataSources) {
       .filter(Boolean); // Remove quaisquer entradas nulas resultantes da verificação defensiva.
 }
 
-async function generateAlertsFromLogs(logs, settings) {
-    const { keywords, aiPrompt, apiKey } = settings;
-    const customAI = apiKey ? new GoogleGenAI({ apiKey }) : ai;
+async function parseMboxStream(stream) {
+    return new Promise((resolve, reject) => {
+        const mbox = new Mbox(stream, { stream: true });
+        const logs = [];
 
-    // Substitui um placeholder no prompt pelas palavras-chave
-    const promptWithKeywords = aiPrompt.replace('${keywords}', keywords.join(', '));
+        mbox.on('message', async (msgStream) => {
+            try {
+                const parsed = await simpleParser(msgStream);
+                logs.push({
+                    actor: parsed.from.text,
+                    time: parsed.date.toISOString(),
+                    application: 'vault_chat_or_gmail',
+                    eventName: parsed.subject,
+                    details: parsed.text
+                });
+            } catch (err) {
+                console.error('Erro ao analisar a mensagem de e-mail:', err);
+            }
+        });
 
-    const finalPrompt = `
-        ${promptWithKeywords}
+        mbox.on('end', () => resolve(logs));
+        mbox.on('error', (err) => reject(err));
+    });
+}
 
-        Logs para Análise:
-        ${JSON.stringify(logs.slice(0, 150), null, 2)}
-    `;
-    
-    const responseSchema = {
-        type: 'ARRAY',
-        items: {
-            type: 'OBJECT',
-            properties: {
-                title: { type: 'STRING', description: 'Um título curto e impactante para o alerta.' },
-                summary: { type: 'STRING', description: 'Um resumo de uma frase explicando a ameaça.' },
-                severity: { type: 'STRING', description: "A severidade do risco ('Baixa', 'Média', ou 'Alta')." },
-                user: { type: 'STRING', description: 'O e-mail do usuário envolvido.' },
-                timestamp: { type: 'STRING', description: 'O timestamp ISO 8601 do evento principal.' },
-                reasoning: { type: 'STRING', description: 'Uma explicação detalhada em markdown do PORQUÊ esta atividade é considerada uma ameaça.' },
-                evidence: {
-                    type: 'ARRAY',
-                    description: 'Um array contendo os objetos de log exatos (do input) que sustentam esta conclusão.',
-                    items: {
-                        type: 'OBJECT',
-                        properties: {
-                            actor: { type: 'STRING' }, time: { type: 'STRING' },
-                            application: { type: 'STRING' }, eventName: { type: 'STRING' },
-                            details: { type: 'STRING' }
-                        }
-                    }
-                }
-            },
-            required: ['title', 'summary', 'severity', 'user', 'timestamp', 'reasoning', 'evidence']
-        }
+async function fetchLogsFromVault(client, matterId, dataSources) {
+    console.log(`[Vault] Iniciando coleta para o matter ID: ${matterId}`);
+    if (!matterId) {
+        console.log("[Vault] ID da matéria não fornecido. Pulando.");
+        return [];
+    }
+
+    const vault = google.vault({ version: 'v1', auth: client });
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const exportOptions = {
+        mboxExportOptions: {
+            exportFormat: 'MBOX',
+        },
+    };
+
+    const query = {
+        corpus: 'MAIL', // Focus on Mail and Chat, which are in MBOX
+        dataScope: 'ALL_DATA',
+        searchMethod: 'ENTIRE_ORG',
+        startTime: thirtyDaysAgo.toISOString(),
+        endTime: new Date().toISOString(),
+        timeZone: 'UTC',
     };
 
     try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-pro',
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema,
+        console.log('[Vault] Criando a exportação...');
+        const exportRequest = await vault.matters.exports.create({
+            matterId: matterId,
+            requestBody: {
+                name: `Exportação de Análise do EXA Shield - ${new Date().toISOString()}`,
+                query: query,
+                exportOptions: exportOptions
             },
         });
+
+        const exportId = exportRequest.data.id;
+        console.log(`[Vault] Exportação criada com ID: ${exportId}. Aguardando conclusão...`);
+
+        let exportStatus;
+        let isDone = false;
+        while (!isDone) {
+            await new Promise(resolve => setTimeout(resolve, 15000)); // Poll every 15 seconds
+            const statusResponse = await vault.operations.get({ name: `operations/${exportId}` });
+            isDone = statusResponse.data.done;
+            if (isDone) {
+                exportStatus = statusResponse.data;
+            } else {
+                 console.log(`[Vault] Status da exportação: IN_PROGRESS...`);
+            }
+        }
         
-        const alertsText = response.text.trim();
-        return JSON.parse(alertsText) || [];
+        if (exportStatus.response?.['@type'].includes('Export')) {
+            const downloadDetails = exportStatus.response.cloudStorageSink;
+            console.log(`[Vault] Exportação concluída. Baixando ${downloadDetails.files.length} arquivos...`);
+
+            let allLogs = [];
+            for (const file of downloadDetails.files) {
+                 const downloadUrl = `https://storage.googleapis.com/download/storage/v1/b/${file.bucketName}/o/${file.objectName}?alt=media`;
+                 const response = await axios.get(downloadUrl, {
+                    headers: { 'Authorization': `Bearer ${await client.getAccessToken()}` },
+                    responseType: 'stream'
+                 });
+                 const parsedLogs = await parseMboxStream(response.data);
+                 allLogs = allLogs.concat(parsedLogs);
+            }
+            console.log(`[Vault] Coleta concluída. ${allLogs.length} logs analisados.`);
+            return allLogs;
+
+        } else {
+            console.error('[Vault] Erro na exportação:', exportStatus.error);
+            throw new Error('Falha ao obter os detalhes da exportação do Vault.');
+        }
+
     } catch (error) {
-        console.error("Erro ao gerar alertas com a IA:", error);
+        console.error('Erro durante o processo do Vault:', error.message);
         return [];
     }
-}
-
-async function storeAlertsInFirestore(alerts, userId) {
-    if (!Array.isArray(alerts) || alerts.length === 0) return;
-
-    const batch = firestore.batch();
-    alerts.forEach(alert => {
-        const alertRef = firestore.collection('alerts').doc();
-        const alertData = {
-          ...alert,
-          evidence: JSON.stringify(alert.evidence || []),
-          userId,
-          createdAt: new Date().toISOString()
-        };
-        batch.set(alertRef, alertData);
-    });
-    await batch.commit();
-    console.log(`${alerts.length} novos alertas detalhados foram gerados para ${userId}.`);
 }
 
 
@@ -218,14 +246,23 @@ async function runAnalysis(userId) {
         const settings = settingsDoc.data();
 
         const client = await getAuthenticatedClient(userId);
-        const simplifiedLogs = await fetchLogsFromGoogle(client, settings.dataSources);
 
-        if (simplifiedLogs.length === 0) {
-            console.log("Nenhum evento encontrado para análise.");
+        const adminLogs = await fetchLogsFromGoogle(client, settings.dataSources);
+
+        let vaultLogs = [];
+        if (settings.vaultEnabled) {
+            vaultLogs = await fetchLogsFromVault(client, settings.vaultMatterId, settings.dataSources);
+        }
+
+        const allLogs = [...adminLogs, ...vaultLogs];
+
+        if (allLogs.length === 0) {
+            console.log("Nenhum evento encontrado para análise de nenhuma fonte.");
+            await settingsRef.update({ isAnalysisRunning: false }); // Ensure we stop the running state
             return;
         }
 
-        const alerts = await generateAlertsFromLogs(simplifiedLogs, settings);
+        const alerts = await generateAlertsFromLogs(allLogs, settings.keywords, settings.aiPrompt);
         await storeAlertsInFirestore(alerts, userId);
 
     } catch (error) {
@@ -251,6 +288,7 @@ app.get('/api/auth/google', (req, res) => {
       'https://www.googleapis.com/auth/userinfo.profile',
       'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/admin.reports.audit.readonly',
+      'https://www.googleapis.com/auth/ediscovery',
     ];
     const authUrl = oauth2Client.generateAuthUrl({
       access_type: 'offline',
@@ -340,6 +378,8 @@ app.get('/api/settings', isAuthenticated, async (req, res) => {
         isAnalysisRunning: false,
         lastRunTimestamp: null,
         schedule: 'disabled',
+        vaultEnabled: false,
+        vaultMatterId: '',
         aiPrompt: `### FUNÇÃO E OBJETIVO
 Você é o EXA Shield, um especialista sênior em contra-inteligência e segurança corporativa. Sua função principal é analisar logs estruturados do Google Workspace para identificar proativamente ameaças internas. Seu foco é a detecção de riscos como insatisfação de funcionários, conflito de interesses, fraude, e vazamento de dados, com a máxima precisão para minimizar falsos positivos. Você deve basear-se estritamente nos logs fornecidos, correlacionando eventos para identificar padrões de risco.
 

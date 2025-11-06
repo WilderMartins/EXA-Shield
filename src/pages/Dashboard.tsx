@@ -68,6 +68,14 @@ const SettingsPage = () => {
     }));
   };
 
+  const handleVaultConfigChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value, type } = e.target;
+    const isCheckbox = type === 'checkbox';
+    // @ts-ignore
+    const val = isCheckbox ? e.target.checked : value;
+    setLocalSettings((prev: any) => ({ ...prev, [name]: val }));
+  };
+
   const handleScheduleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setLocalSettings((prev: any) => ({ ...prev, schedule: e.target.value }));
   };
@@ -109,6 +117,41 @@ const SettingsPage = () => {
               <span className="capitalize text-slate-200">{source}</span>
             </label>
           ))}
+        </div>
+      </div>
+
+      <div>
+        <h2 className="text-xl font-semibold text-white">Integração com Google Vault</h2>
+        <p className="mt-1 text-slate-400">
+          Habilite a coleta de dados do Google Vault para uma análise de segurança mais profunda.
+        </p>
+        <div className="mt-4 space-y-4 rounded-md border border-slate-700 bg-slate-800/50 p-4">
+          <div className="flex items-center justify-between">
+            <label htmlFor="vaultEnabled" className="flex-grow text-slate-200">Ativar Integração com Vault</label>
+            <input
+              id="vaultEnabled"
+              name="vaultEnabled"
+              type="checkbox"
+              checked={!!localSettings.vaultEnabled}
+              onChange={handleVaultConfigChange}
+              className="h-6 w-11 rounded-full bg-slate-700 after:absolute after:top-[2px] after:left-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] checked:bg-sky-500 checked:after:translate-x-full checked:after:border-white focus:ring-sky-500"
+            />
+          </div>
+
+          {localSettings.vaultEnabled && (
+            <div className="animate-fade-in">
+              <label htmlFor="vaultMatterId" className="block text-sm font-medium text-slate-300">ID da Matéria (Matter) do Vault</label>
+              <input
+                type="text"
+                id="vaultMatterId"
+                name="vaultMatterId"
+                value={localSettings.vaultMatterId || ''}
+                onChange={handleVaultConfigChange}
+                className="mt-1 block w-full rounded-md border-slate-600 bg-slate-900 text-slate-200 shadow-sm focus:border-sky-500 focus:ring-sky-500"
+                placeholder="Ex: abc-123-def-456"
+              />
+            </div>
+          )}
         </div>
       </div>
 

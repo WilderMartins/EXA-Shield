@@ -20,6 +20,8 @@
     "dotenv": "^17.2.3",
     "express": "^4.19.2",
     "googleapis": "^137.1.0",
+    "mailparser": "^3.9.0",
+    "node-mbox": "^2.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.9.5"
