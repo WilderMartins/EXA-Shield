@@ -6,27 +6,33 @@
   "scripts": {
     "dev": "concurrently \"npm:dev:frontend\" \"npm:dev:backend\"",
     "dev:frontend": "vite",
-    "dev:backend": "node --watch backend/index.js",
-    "start": "vite build && node backend/index.js",
+    "dev:backend": "nodemon -r dotenv/config backend/index.js",
+    "start": "vite build && node -r dotenv/config backend/index.js",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "react-dom": "^19.2.0",
-    "@google/genai": "^1.27.0",
-    "react": "^19.2.0",
-    "@heroicons/react": "^2.2.0",
+    "@aws-sdk/client-ses": "^3.922.0",
     "@google-cloud/firestore": "^7.8.0",
+    "@google/genai": "^1.27.0",
+    "@heroicons/react": "^2.2.0",
     "cookie-session": "^2.1.0",
+    "dotenv": "^17.2.3",
     "express": "^4.19.2",
-    "googleapis": "^137.1.0"
+    "googleapis": "^137.1.0",
+    "mailparser": "^3.9.0",
+    "node-mbox": "^2.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.9.5"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2",
-    "inquirer": "^9.2.23",
-    "chalk": "^5.3.0",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "chalk": "^5.3.0",
+    "concurrently": "^8.2.2",
+    "inquirer": "^9.2.23",
+    "nodemon": "^3.1.10",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }

@@ -4,6 +4,10 @@ const { GoogleGenAI } = require('@google/genai');
 const { Firestore } = require('@google-cloud/firestore');
 const cookieSession = require('cookie-session');
 const path = require('path');
+const Mbox = require('node-mbox');
+const { simpleParser } = require('mailparser');
+const axios = require('axios');
+const { Readable } = require('stream');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -99,78 +103,110 @@ async function fetchLogsFromGoogle(client, dataSources) {
     }));
 }
 
-async function generateAlertsFromLogs(logs, keywords) {
-    const prompt = `
-        Você é o EXA Shield, um analista de segurança de IA de elite. Sua missão é analisar logs do Google Workspace para identificar ameaças internas e vazamento de dados, focando nas palavras-chave de risco: ${keywords.join(', ')}.
+async function parseMboxStream(stream) {
+    return new Promise((resolve, reject) => {
+        const mbox = new Mbox(stream, { stream: true });
+        const logs = [];
 
-        Analise os logs abaixo. Para cada ameaça identificada, gere um alerta detalhado. Se nenhuma ameaça for encontrada, retorne um array vazio.
+        mbox.on('message', async (msgStream) => {
+            try {
+                const parsed = await simpleParser(msgStream);
+                logs.push({
+                    actor: parsed.from.text,
+                    time: parsed.date.toISOString(),
+                    application: 'vault_chat_or_gmail',
+                    eventName: parsed.subject,
+                    details: parsed.text
+                });
+            } catch (err) {
+                console.error('Erro ao analisar a mensagem de e-mail:', err);
+            }
+        });
 
-        Logs para Análise:
-        ${JSON.stringify(logs.slice(0, 150), null, 2)}
-    `;
-    
-    const responseSchema = {
-        type: 'ARRAY',
-        items: {
-            type: 'OBJECT',
-            properties: {
-                title: { type: 'STRING', description: 'Um título curto e impactante para o alerta.' },
-                summary: { type: 'STRING', description: 'Um resumo de uma frase explicando a ameaça.' },
-                severity: { type: 'STRING', description: "A severidade do risco ('Baixa', 'Média', ou 'Alta')." },
-                user: { type: 'STRING', description: 'O e-mail do usuário envolvido.' },
-                timestamp: { type: 'STRING', description: 'O timestamp ISO 8601 do evento principal.' },
-                reasoning: { type: 'STRING', description: 'Uma explicação detalhada em markdown do PORQUÊ esta atividade é considerada uma ameaça.' },
-                evidence: {
-                    type: 'ARRAY',
-                    description: 'Um array contendo os objetos de log exatos (do input) que sustentam esta conclusão.',
-                    items: {
-                        type: 'OBJECT',
-                        properties: {
-                            actor: { type: 'STRING' }, time: { type: 'STRING' },
-                            application: { type: 'STRING' }, eventName: { type: 'STRING' },
-                            details: { type: 'STRING' }
-                        }
-                    }
-                }
-            },
-            required: ['title', 'summary', 'severity', 'user', 'timestamp', 'reasoning', 'evidence']
-        }
+        mbox.on('end', () => resolve(logs));
+        mbox.on('error', (err) => reject(err));
+    });
+}
+
+async function fetchLogsFromVault(client, matterId, dataSources) {
+    console.log(`[Vault] Iniciando coleta para o matter ID: ${matterId}`);
+    if (!matterId) {
+        console.log("[Vault] ID da matéria não fornecido. Pulando.");
+        return [];
+    }
+
+    const vault = google.vault({ version: 'v1', auth: client });
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const exportOptions = {
+        mboxExportOptions: {
+            exportFormat: 'MBOX',
+        },
+    };
+
+    const query = {
+        corpus: 'MAIL', // Focus on Mail and Chat, which are in MBOX
+        dataScope: 'ALL_DATA',
+        searchMethod: 'ENTIRE_ORG',
+        startTime: thirtyDaysAgo.toISOString(),
+        endTime: new Date().toISOString(),
+        timeZone: 'UTC',
     };
 
     try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-pro',
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema,
+        console.log('[Vault] Criando a exportação...');
+        const exportRequest = await vault.matters.exports.create({
+            matterId: matterId,
+            requestBody: {
+                name: `Exportação de Análise do EXA Shield - ${new Date().toISOString()}`,
+                query: query,
+                exportOptions: exportOptions
             },
         });
+
+        const exportId = exportRequest.data.id;
+        console.log(`[Vault] Exportação criada com ID: ${exportId}. Aguardando conclusão...`);
+
+        let exportStatus;
+        let isDone = false;
+        while (!isDone) {
+            await new Promise(resolve => setTimeout(resolve, 15000)); // Poll every 15 seconds
+            const statusResponse = await vault.operations.get({ name: `operations/${exportId}` });
+            isDone = statusResponse.data.done;
+            if (isDone) {
+                exportStatus = statusResponse.data;
+            } else {
+                 console.log(`[Vault] Status da exportação: IN_PROGRESS...`);
+            }
+        }
         
-        const alertsText = response.text.trim();
-        return JSON.parse(alertsText) || [];
+        if (exportStatus.response?.['@type'].includes('Export')) {
+            const downloadDetails = exportStatus.response.cloudStorageSink;
+            console.log(`[Vault] Exportação concluída. Baixando ${downloadDetails.files.length} arquivos...`);
+
+            let allLogs = [];
+            for (const file of downloadDetails.files) {
+                 const downloadUrl = `https://storage.googleapis.com/download/storage/v1/b/${file.bucketName}/o/${file.objectName}?alt=media`;
+                 const response = await axios.get(downloadUrl, {
+                    headers: { 'Authorization': `Bearer ${await client.getAccessToken()}` },
+                    responseType: 'stream'
+                 });
+                 const parsedLogs = await parseMboxStream(response.data);
+                 allLogs = allLogs.concat(parsedLogs);
+            }
+            console.log(`[Vault] Coleta concluída. ${allLogs.length} logs analisados.`);
+            return allLogs;
+
+        } else {
+            console.error('[Vault] Erro na exportação:', exportStatus.error);
+            throw new Error('Falha ao obter os detalhes da exportação do Vault.');
+        }
+
     } catch (error) {
-        console.error("Erro ao gerar alertas com a IA:", error);
+        console.error('Erro durante o processo do Vault:', error.message);
         return [];
     }
-}
-
-async function storeAlertsInFirestore(alerts, userId) {
-    if (!Array.isArray(alerts) || alerts.length === 0) return;
-
-    const batch = firestore.batch();
-    alerts.forEach(alert => {
-        const alertRef = firestore.collection('alerts').doc();
-        const alertData = {
-          ...alert,
-          evidence: JSON.stringify(alert.evidence || []),
-          userId,
-          createdAt: new Date().toISOString()
-        };
-        batch.set(alertRef, alertData);
-    });
-    await batch.commit();
-    console.log(`${alerts.length} novos alertas detalhados foram gerados para ${userId}.`);
 }
 
 
@@ -186,14 +222,23 @@ async function runAnalysis(userId) {
         const settings = settingsDoc.data();
 
         const client = await getAuthenticatedClient(userId);
-        const simplifiedLogs = await fetchLogsFromGoogle(client, settings.dataSources);
 
-        if (simplifiedLogs.length === 0) {
-            console.log("Nenhum evento encontrado para análise.");
+        const adminLogs = await fetchLogsFromGoogle(client, settings.dataSources);
+
+        let vaultLogs = [];
+        if (settings.vaultEnabled) {
+            vaultLogs = await fetchLogsFromVault(client, settings.vaultMatterId, settings.dataSources);
+        }
+
+        const allLogs = [...adminLogs, ...vaultLogs];
+
+        if (allLogs.length === 0) {
+            console.log("Nenhum evento encontrado para análise de nenhuma fonte.");
+            await settingsRef.update({ isAnalysisRunning: false }); // Ensure we stop the running state
             return;
         }
 
-        const alerts = await generateAlertsFromLogs(simplifiedLogs, settings.keywords);
+        const alerts = await generateAlertsFromLogs(allLogs, settings.keywords, settings.aiPrompt);
         await storeAlertsInFirestore(alerts, userId);
 
     } catch (error) {
@@ -213,6 +258,7 @@ app.get('/api/auth/google', (req, res) => {
       'https://www.googleapis.com/auth/userinfo.profile',
       'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/admin.reports.audit.readonly',
+      'https://www.googleapis.com/auth/ediscovery',
     ];
     const authUrl = oauth2Client.generateAuthUrl({
       access_type: 'offline',
@@ -289,6 +335,147 @@ app.get('/api/settings', isAuthenticated, async (req, res) => {
         keywords: ['confidencial', 'privado', 'senha', 'salário'],
         isAnalysisRunning: false,
         lastRunTimestamp: null,
+        schedule: 'disabled',
+        vaultEnabled: false,
+        vaultMatterId: '',
+        aiPrompt: `### FUNÇÃO E OBJETIVO
+Você é o EXA Shield, um especialista sênior em contra-inteligência e segurança corporativa. Sua função principal é analisar logs estruturados do Google Workspace para identificar proativamente ameaças internas. Seu foco é a detecção de riscos como insatisfação de funcionários, conflito de interesses, fraude, e vazamento de dados, com a máxima precisão para minimizar falsos positivos. Você deve basear-se estritamente nos logs fornecidos, correlacionando eventos para identificar padrões de risco.
+
+### DIRETRIZES DE ANÁLISE
+Analise os logs buscando por indicadores das seguintes categorias de risco. Avalie o contexto cuidadosamente. Uma única ação pode ser inofensiva, mas uma sequência de ações pode indicar uma ameaça.
+
+**Categorias de Risco e Indicadores Chave:**
+
+*   **1. Risco Trabalhista/Insatisfação:**
+    *   **Descrição:** Comentários negativos sobre a empresa, gestão, ou condições de trabalho; menções a procurar outros empregos ou ações legais.
+    *   **Indicadores em Logs:** Ações como \`delete_document\` ou \`download_multiple_files\` por um usuário que também expressou insatisfação (se os logs de comunicação estiverem disponíveis). Um pico de atividade de download de arquivos por um funcionário em vias de sair.
+    *   **Palavras-chave (para logs de comunicação):** \`odeio, péssimo, injusto, processo trabalhista, procurando outro emprego, vou pedir demissão, empresa de merda, entrevista, proposta de emprego\`.
+
+*   **2. Risco de Segunda Jornada (Conflito de Interesses):**
+    *   **Descrição:** Atividades que sugiram trabalho para concorrentes, uso de recursos da empresa para projetos paralelos ou ociosidade deliberada.
+    *   **Indicadores em Logs:** Compartilhar arquivos (\`share_document\`) com domínios externos não reconhecidos, especialmente se os nomes dos arquivos contiverem termos como "freelance", "projeto pessoal" ou nomes de clientes externos.
+
+*   **3. Risco Comportamental (Assédio/Linguagem Inapropriada):**
+    *   **Descrição:** Uso de linguagem hostil, discriminatória ou assédio em plataformas de comunicação corporativas.
+    *   **Indicadores em Logs:** Análise de conteúdo em logs de \`google_chat\` que contenham linguagem ofensiva ou direcionada a indivíduos específicos.
+
+*   **4. Risco de Segurança da Informação (Vazamento/Acesso Indevido):**
+    *   **Descrição:** Tentativas de copiar, mover, ou exfiltrar dados sensíveis da empresa para locais não autorizados.
+    *   **Indicadores em Logs:** Sequências de ações como \`download_multiple_files\` seguido de \`upload_to_personal_drive\`, ou \`change_document_visibility\` de "restrito" para "público". Concessão de acesso (\`grant_access\`) a emails pessoais. Tentativas de login falhas (\`login_failure\`) de locais incomuns, seguidas por um login bem-sucedido (\`login_success\`) e alta atividade de download.
+    *   **Palavras-chave (em nomes de arquivos/eventos):** \`exportar contatos, copiar base de dados, plano de negócios, código-fonte, enviar para email pessoal, backup de senhas, apagar logs, desativar monitoramento\`.
+
+*   **5. Risco de Fraude e Ética:**
+    *   **Descrição:** Ações que sugiram manipulação de dados financeiros, falsificação de informações ou violação do código de ética.
+    *   **Indicadores em Logs:** Alteração de permissões em planilhas financeiras (\`change_document_permissions\` em arquivos com nomes como "Relatório de Despesas", "Comissões"), seguida por edições (\`edit_document\`) por usuários não autorizados.
+
+*   **6. Risco Criminal/Físico:**
+    *   **Descrição:** Ameaças diretas à integridade física de colaboradores ou à propriedade da empresa.
+    *   **Indicadores em Logs:** Análise de conteúdo em logs de \`google_chat\` contendo ameaças explícitas ou menções a endereços pessoais de executivos.
+
+### FORMATO DA RESPOSTA
+Sua resposta DEVE ser um array de objetos JSON, seguindo estritamente este formato. Se nenhuma ameaça for encontrada, retorne um array vazio \`[]\`.
+
+\`\`\`json
+[
+  {
+    "title": "string (Um título curto e impactante para o alerta)",
+    "summary": "string (Um resumo de uma frase explicando a ameaça)",
+    "severity": "string ('Baixa', 'Média', ou 'Alta')",
+    "user": "string (O e-mail do usuário/ator principal envolvido)",
+    "timestamp": "string (O timestamp ISO 8601 do evento principal ou mais recente da ameaça)",
+    "reasoning": "string (Uma explicação detalhada em markdown do PORQUÊ esta sequência de atividades é considerada uma ameaça, correlacionando os eventos)",
+    "evidence": [
+      {
+        "actor": "string",
+        "time": "string",
+        "application": "string",
+        "eventName": "string",
+        "details": "string"
+      }
+    ]
+  }
+]
+\`\`\`
+
+### CONTEÚDO PARA ANÁLISE
+A seguir, uma lista de logs de eventos do Google Workspace em formato JSON. Cada objeto representa uma ação executada por um usuário. Analise estes logs para encontrar as ameaças.
+
+### EXEMPLOS DE SAÍDA
+
+**Exemplo 1: Vazamento de Dados**
+\`\`\`json
+[
+  {
+    "title": "Exfiltração de Dados Potencial para E-mail Pessoal",
+    "summary": "O usuário alterou a visibilidade de um documento sensível para 'público' e depois o compartilhou com um endereço de e-mail externo.",
+    "severity": "Alta",
+    "user": "usuario.insatisfeito@empresa.com",
+    "timestamp": "2024-10-27T14:10:00Z",
+    "reasoning": "O usuário \`usuario.insatisfeito@empresa.com\` realizou uma sequência de ações altamente suspeitas. Primeiro, o documento 'Plano Estratégico Q4' teve sua visibilidade alterada de 'privado' para 'qualquer um com o link'. Imediatamente depois, o mesmo usuário compartilhou este documento com um endereço de e-mail pessoal (\`fulano.pessoal@gmail.com\`). Esta sequência indica uma forte probabilidade de exfiltração intencional de dados confidenciais.",
+    "evidence": [
+      {
+        "actor": "usuario.insatisfeito@empresa.com",
+        "time": "2024-10-27T14:09:30Z",
+        "application": "drive",
+        "eventName": "change_document_visibility",
+        "details": "item_name: Plano Estratégico Q4; old_visibility: private; new_visibility: anyone_with_link"
+      },
+      {
+        "actor": "usuario.insatisfeito@empresa.com",
+        "time": "2024-10-27T14:10:00Z",
+        "application": "drive",
+        "eventName": "share_document",
+        "details": "item_name: Plano Estratégico Q4; target_user: fulano.pessoal@gmail.com"
+      }
+    ]
+  }
+]
+\`\`\`
+**Exemplo 2: Tentativa de Acesso Indevido**
+\`\`\`json
+[
+  {
+    "title": "Tentativa de Acesso Suspeita de Localização Incomum",
+    "summary": "Múltiplas tentativas de login falhas originadas da Rússia foram seguidas por um login bem-sucedido e download de múltiplos arquivos.",
+    "severity": "Média",
+    "user": "alvo.comprometido@empresa.com",
+    "timestamp": "2024-10-27T15:25:10Z",
+    "reasoning": "A conta do usuário \`alvo.comprometido@empresa.com\` registrou 5 tentativas de login mal-sucedidas de um endereço de IP localizado na Rússia. Logo em seguida, um login bem-sucedido ocorreu a partir do mesmo IP, que foi imediatamente seguido por uma ação de download em massa de 50 arquivos do Google Drive. Este padrão sugere que a conta pode ter sido comprometida e está sendo usada para roubo de informações.",
+    "evidence": [
+      {
+        "actor": "alvo.comprometido@empresa.com",
+        "time": "2024-10-27T15:20:00Z",
+        "application": "login",
+        "eventName": "login_failure",
+        "details": "ip_address: 91.207.175.82; reason: incorrect_password"
+      },
+      {
+        "actor": "alvo.comprometido@empresa.com",
+        "time": "2024-10-27T15:25:00Z",
+        "application": "login",
+        "eventName": "login_success",
+        "details": "ip_address: 91.207.175.82"
+      },
+      {
+        "actor": "alvo.comprometido@empresa.com",
+        "time": "2024-10-27T15:25:10Z",
+        "application": "drive",
+        "eventName": "download_multiple_files",
+        "details": "num_files: 50"
+      }
+    ]
+  }
+]
+\`\`\`
+        `.trim(),
+        apiKey: '',
+        notifications: {
+          ses: {
+            enabled: false,
+            fromAddress: '',
+            toAddress: '',
+          },
+        },
       };
       await settingsRef.set(defaultSettings);
       res.json(defaultSettings);
